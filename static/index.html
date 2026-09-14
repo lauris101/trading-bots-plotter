@@ -7,16 +7,17 @@
 <style>
   :root { --bg:#0b0e13; --panel:#131922; --panel2:#1a2230; --line:#273140; --text:#dde4ec; --muted:#8b98a9; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --amber:#d29922; --mono: ui-monospace, Menlo, Consolas, monospace; }
   * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font:13px/1.45 system-ui, sans-serif; }
-  .top { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; padding:10px 14px; border-bottom:1px solid var(--line); background:var(--panel); }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--text); font:13px/1.45 system-ui, sans-serif; display:flex; flex-direction:column; overflow:hidden; }
+  .top { flex:none; display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; padding:10px 14px; border-bottom:1px solid var(--line); background:var(--panel); }
   .top h1 { font-size:15px; margin:0 8px 6px 0; }
   label.f { display:flex; flex-direction:column; gap:2px; font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
   select, input, button { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:5px 8px; font:13px system-ui, sans-serif; }
   button { cursor:pointer; } button:hover { border-color:var(--accent); color:var(--accent); }
   button.on { border-color:var(--accent); color:var(--accent); }
   .meta { color:var(--muted); font-size:12px; }
-  .body { display:grid; grid-template-columns: 420px 1fr; min-height: calc(100vh - 58px); }
-  .side { border-right:1px solid var(--line); overflow:auto; max-height: calc(100vh - 58px); }
+  .body { flex:1; min-height:0; display:grid; grid-template-columns: 420px 1fr; }
+  .side { border-right:1px solid var(--line); overflow:auto; min-height:0; }
   .side table { width:100%; border-collapse:collapse; font-size:12px; }
   .side th, .side td { padding:4px 6px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
   .side th { position:sticky; top:0; background:var(--panel); color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
@@ -28,14 +29,14 @@
   .b-resting, .b-sent, .b-partially_filled { color:var(--amber); border-color:var(--amber); }
   .b-cancelled, .b-left_resting, .b-unknown { color:var(--muted); border-color:var(--muted); }
   .buy { color:var(--green); } .sell { color:var(--red); }
-  #plotwrap { position:relative; width:100%; height: calc(100vh - 58px); overflow:hidden; }
+  #plotwrap { position:relative; width:100%; height:100%; min-height:0; overflow:hidden; }
   #plot { display:block; cursor:crosshair; }
   #tip { position:absolute; z-index:2; pointer-events:none; background:#1a2230f2; border:1px solid var(--line); border-radius:6px; padding:6px 9px; font:11px/1.45 var(--mono); color:var(--text); max-width:520px; white-space:nowrap; }
   #tip[hidden] { display:none; }
   .legend button.lg { display:inline-flex; align-items:center; gap:5px; padding:2px 7px; font-size:11px; border-radius:999px; }
   .legend button.lg.off { opacity:.35; text-decoration:line-through; }
   .legend .help { margin-left:auto; }
-  .legend { display:flex; gap:6px; align-items:center; flex-wrap:wrap; padding:6px 14px; color:var(--muted); font-size:11px; border-bottom:1px solid var(--line); }
+  .legend { flex:none; display:flex; gap:6px; align-items:center; flex-wrap:wrap; padding:6px 14px; color:var(--muted); font-size:11px; border-bottom:1px solid var(--line); }
   .legend span b { font-weight:600; color:var(--text); }
   #status { padding:8px 14px; color:var(--muted); font-size:12px; }
   #status.err { color:var(--red); }
