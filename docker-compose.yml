@@ -1,0 +1,24 @@
+# `docker compose up -d --build` runs the plotter; add `--profile tunnel` to
+# also run a cloudflared sidecar that forwards Postgres from the Access
+# hostname to `tunnel:15432` inside the compose network. Everything else
+# comes from `.env` (see `.env.example`).
+services:
+  plotter:
+    build: .
+    image: trading-bots-plotter
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PLOTTER_ADDR: 0.0.0.0:8095
+    ports:
+      # Bind to one address (default loopback); published ports bypass the
+      # host firewall, so never leave this at 0.0.0.0 on a public host.
+      - "${PLOTTER_BIND:-127.0.0.1}:8095:8095"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: access tcp --hostname ${DB_TUNNEL_HOSTNAME} --url 0.0.0.0:15432

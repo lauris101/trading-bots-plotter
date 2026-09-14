@@ -26,24 +26,51 @@ last quote per bucket.
 
 ## Run
 
+Configuration is one `.env` file, read both by the native binary and by
+docker compose:
+
 ```bash
 cp .env.example .env     # fill in the two passwords (trading-bots-db/.env)
-just run                 # or: cargo run --release
+```
+
+### Docker
+
+```bash
+docker compose up -d --build plotter     # or: just up
+docker compose logs -f plotter           # just logs
+docker compose down                      # just down
+```
+
+The image builds the release binary in a `rust:1.98` stage and ships it on
+`debian:bookworm-slim` (about 100 MB, runs as `nobody`). The container
+listens on port 8095 and the port is published on `PLOTTER_BIND` only
+(default `127.0.0.1`; set the VPN address, e.g. `10.0.0.1`, to reach it
+over WireGuard). Docker publishes ports around the host firewall, so do not
+set it to `0.0.0.0` on a host with a public address.
+
+Reaching Postgres from the container:
+
+- Tunnel on the host (`just tunnels` in `trading-bots-host-setup/cloudflare`,
+  or `cloudflared access tcp --hostname db.<domain> --url 127.0.0.1:15432`):
+  `DATABASE_URL=postgres://...@host.docker.internal:15432/...`.
+- Tunnel as a sidecar, on a host whose address is on the Access bypass list:
+  `docker compose --profile tunnel up -d --build` (`just up-tunnel`) and
+  `DATABASE_URL=postgres://...@tunnel:15432/...`. `DB_TUNNEL_HOSTNAME` names
+  the Access hostname.
+
+ClickHouse is reached over HTTPS by hostname (`CLICKHOUSE_URL`), or through
+the host's forward at `http://host.docker.internal:18123`.
+
+### Native
+
+```bash
+just run                 # debug build; or: just run-release
 ```
 
 Open http://127.0.0.1:8095. Live orders are shown by default (the mode
 selector also offers dummy, or both). The bot and instrument with the newest
-live orders are preselected, centred on the newest order; click any order in the list
-to centre on it; `←` / `→` shift the window by half its length.
-
-Reaching the stores:
-
-- From a laptop: `just tunnels` in `trading-bots-host-setup/cloudflare`
-  forwards Postgres to `127.0.0.1:15432` and ClickHouse HTTP to
-  `127.0.0.1:18123`, which is what `.env.example` points at.
-- From a machine whose address is on the Access bypass list:
-  `CLICKHOUSE_URL=https://chdb.<domain>` directly, and Postgres through
-  `cloudflared access tcp --hostname db.<domain> --url 127.0.0.1:15432`.
+live orders are preselected, centred on the newest order; click any order in
+the list to centre on it; `←` / `→` shift the window by half its length.
 
 ## Layout
 
