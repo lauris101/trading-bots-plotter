@@ -194,18 +194,51 @@
     }
     const layout = {
       paper_bgcolor: "#0b0e13", plot_bgcolor: "#0f141b", font: { color: "#dde4ec", size: 11 },
-      margin: { l: 70, r: 20, t: 10, b: 40 }, hovermode: "closest", dragmode: "pan",
+      margin: { l: 70, r: 20, t: 10, b: 40 }, hovermode: "closest", dragmode: "zoom",
       legend: { orientation: "h", y: 1.02, x: 0 },
       xaxis: { type: "date", range: [new Date(from), new Date(to)], gridcolor: "#1f2733", tickformat: "%H:%M:%S.%L", hoverformat: "%H:%M:%S.%L" },
       yaxis: { title: inst, domain: [0.32, 1], gridcolor: "#1f2733", tickformat: ".6~g" },
       yaxis2: { title: "bps", domain: [0, 0.26], gridcolor: "#1f2733", zeroline: true, zerolinecolor: "#3a4656" },
       shapes: state.selected ? [] : [],
     };
-    const config = { responsive: true, scrollZoom: true, displaylogo: false, doubleClick: "reset", modeBarButtonsToRemove: ["lasso2d", "select2d", "zoom2d"] };
+    const config = { responsive: true, scrollZoom: false, displaylogo: false, doubleClick: "reset", modeBarButtonsToRemove: ["lasso2d", "select2d"] };
     await Plotly.react("plot", traces, layout, config);
     const nq = venues.reduce((a, v) => a + w.quotes.by_venue[v].length, 0);
     status(`${nq} quotes, ${w.events.length} events, ${fmt(from).slice(11, 19)} to ${fmt(to).slice(11, 19)} UTC${w.quotes.bucketed_ms ? `, bucketed to ${w.quotes.bucketed_ms} ms` : ""}`);
   }
+
+  // ---- trackpad: two fingers pan, pinch (or ctrl/cmd + wheel) zooms ----
+  // Plotly's own scroll handling only zooms, so the wheel is handled here.
+  // The content follows the fingers; a pinch zooms both axes of the price
+  // pane around the cursor and only the time axis of the bps pane.
+  const plotEl = $("plot");
+  let pending = null;
+  plotEl.addEventListener("wheel", (ev) => {
+    const fl = plotEl._fullLayout;
+    if (!fl || !fl.xaxis || !fl.xaxis._length) return;
+    ev.preventDefault();
+    const xa = fl.xaxis, ya = fl.yaxis, y2 = fl.yaxis2;
+    const scale = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? fl.height : 1;
+    const dx = ev.deltaX * scale, dy = ev.deltaY * scale;
+    const [x0, x1] = xa.range.map(xa.r2l), [y0, y1] = ya.range.map(ya.r2l);
+    const upd = {};
+    if (ev.ctrlKey || ev.metaKey) {
+      const f = Math.exp(dy * 0.01);
+      const rect = plotEl.getBoundingClientRect();
+      const fx = Math.min(1, Math.max(0, (ev.clientX - rect.left - xa._offset) / xa._length));
+      const fy = Math.min(1, Math.max(0, 1 - (ev.clientY - rect.top - ya._offset) / ya._length));
+      const cx = x0 + fx * (x1 - x0), cy = y0 + fy * (y1 - y0);
+      upd["xaxis.range"] = [xa.l2r(cx - (cx - x0) * f), xa.l2r(cx + (x1 - cx) * f)];
+      upd["yaxis.range"] = [ya.l2r(cy - (cy - y0) * f), ya.l2r(cy + (y1 - cy) * f)];
+    } else {
+      const kx = (x1 - x0) / xa._length, ky = (y1 - y0) / ya._length;
+      upd["xaxis.range"] = [xa.l2r(x0 + dx * kx), xa.l2r(x1 + dx * kx)];
+      upd["yaxis.range"] = [ya.l2r(y0 - dy * ky), ya.l2r(y1 - dy * ky)];
+    }
+    if (y2 && y2.range) upd["yaxis2.range"] = y2.range;
+    pending = upd;
+    requestAnimationFrame(() => { if (pending) { const u = pending; pending = null; Plotly.relayout(plotEl, u); } });
+  }, { passive: false });
 
   // ---- wiring ----
   $("bot").onchange = async () => { fillInstruments(); await loadOrders(); jumpLatest(); };

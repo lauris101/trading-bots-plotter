@@ -13,8 +13,9 @@ with both venues' quotes and every order event on top of them.
   basis, rho, delta, threshold, expected gain.
 - Lower pane: the leader's mid over the lagger's mid in basis points, with
   the open threshold of the last decision as dashed lines.
-- Drag pans, the scroll wheel or trackpad zooms, double-click resets. Legend
-  entries toggle a series.
+- Drag a box to zoom into it; two-finger trackpad scroll pans; pinch or
+  ctrl + wheel zooms around the cursor; double-click resets. Legend entries
+  toggle a series.
 
 Reads Postgres (`bot_orders`, `bot_order_events`) and ClickHouse (`quotes`);
 writes nothing. Rust (axum) serves the data as JSON, the page renders with
