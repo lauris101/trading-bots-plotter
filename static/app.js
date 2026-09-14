@@ -4,7 +4,7 @@
 // hover.
 (() => {
   const $ = (id) => document.getElementById(id);
-  const state = { keys: [], orders: [], centreMs: null, selected: null, lastWindow: null };
+  const state = { keys: [], orders: [], centreMs: null, selected: null, lastWindow: null, fullRange: null, dblWired: false };
 
   const fmt = (ms) => new Date(ms).toISOString().replace("T", " ").replace("Z", "");
   const fmtMs = (ms) => fmt(ms).slice(11, 23);
@@ -192,17 +192,34 @@
         for (const s of [th, -th]) traces.push({ type: "scattergl", mode: "lines", name: `threshold ${th.toFixed(1)} bps`, x: [new Date(from), new Date(to)], y: [s, s], line: { width: 1, dash: "dash", color: "#8b98a9" }, yaxis: "y2", hoverinfo: "skip", showlegend: s > 0 });
       }
     }
+    // The full extent of the loaded window: the whole time span and every
+    // quote and marker in it. Double-click returns here.
+    let lo = Infinity, hi = -Infinity;
+    for (const v of venues) for (const r of w.quotes.by_venue[v]) { if (r.bid < lo) lo = r.bid; if (r.ask > hi) hi = r.ask; }
+    for (const g of Object.values(groups)) for (const p of g.pts) { if (p.y < lo) lo = p.y; if (p.y > hi) hi = p.y; }
+    const pad = Number.isFinite(lo) && hi > lo ? (hi - lo) * 0.05 : Math.abs(lo || 1) * 0.001;
+    state.fullRange = { x: [new Date(from), new Date(to)], y: Number.isFinite(lo) ? [lo - pad, hi + pad] : undefined };
     const layout = {
       paper_bgcolor: "#0b0e13", plot_bgcolor: "#0f141b", font: { color: "#dde4ec", size: 11 },
       margin: { l: 70, r: 20, t: 10, b: 40 }, hovermode: "closest", dragmode: "zoom",
       legend: { orientation: "h", y: 1.02, x: 0 },
-      xaxis: { type: "date", range: [new Date(from), new Date(to)], gridcolor: "#1f2733", tickformat: "%H:%M:%S.%L", hoverformat: "%H:%M:%S.%L" },
-      yaxis: { title: inst, domain: [0.32, 1], gridcolor: "#1f2733", tickformat: ".6~g" },
+      xaxis: { type: "date", range: state.fullRange.x, gridcolor: "#1f2733", tickformat: "%H:%M:%S.%L", hoverformat: "%H:%M:%S.%L" },
+      yaxis: { title: inst, domain: [0.32, 1], gridcolor: "#1f2733", tickformat: ".6~g", range: state.fullRange.y, autorange: state.fullRange.y == null },
       yaxis2: { title: "bps", domain: [0, 0.26], gridcolor: "#1f2733", zeroline: true, zerolinecolor: "#3a4656" },
       shapes: state.selected ? [] : [],
     };
-    const config = { responsive: true, scrollZoom: false, displaylogo: false, doubleClick: "reset", modeBarButtonsToRemove: ["lasso2d", "select2d"] };
+    const config = { responsive: true, scrollZoom: false, displaylogo: false, doubleClick: false, modeBarButtonsToRemove: ["lasso2d", "select2d"] };
     await Plotly.react("plot", traces, layout, config);
+    if (!state.dblWired) {
+      state.dblWired = true;
+      $("plot").on("plotly_doubleclick", () => {
+        const r = state.fullRange;
+        if (!r) return;
+        const upd = { "xaxis.range": r.x, "yaxis2.autorange": true };
+        if (r.y) upd["yaxis.range"] = r.y; else upd["yaxis.autorange"] = true;
+        Plotly.relayout("plot", upd);
+      });
+    }
     const nq = venues.reduce((a, v) => a + w.quotes.by_venue[v].length, 0);
     status(`${nq} quotes, ${w.events.length} events, ${fmt(from).slice(11, 19)} to ${fmt(to).slice(11, 19)} UTC${w.quotes.bucketed_ms ? `, bucketed to ${w.quotes.bucketed_ms} ms` : ""}`);
   }

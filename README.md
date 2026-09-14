@@ -14,7 +14,8 @@ with both venues' quotes and every order event on top of them.
 - Lower pane: the leader's mid over the lagger's mid in basis points, with
   the open threshold of the last decision as dashed lines.
 - Drag a box to zoom into it; two-finger trackpad scroll pans; pinch or
-  ctrl + wheel zooms around the cursor; double-click resets. Legend entries
+  ctrl + wheel zooms around the cursor; double-click zooms out to the whole
+  loaded window. Legend entries
   toggle a series.
 
 Reads Postgres (`bot_orders`, `bot_order_events`) and ClickHouse (`quotes`);
