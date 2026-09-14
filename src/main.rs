@@ -156,7 +156,7 @@ async fn orders(State(app): State<Arc<App>>, Query(q): Query<OrdersQuery>) -> Ap
     let rows = sqlx::query(
         "select cloid, mode, side, exec, reduce_only, reason, priority, px::text as px, sz::text as sz,
                 status, error, filled_sz::text as filled_sz, avg_px::text as avg_px,
-                coalesce(sent_at, created_at) as sent_at, done_at
+                coalesce(sent_at, created_at) as sent_at, done_at, trace::text as trace
          from bot_orders
          where bot = $1 and upper(instrument) = upper($2) and ($3::text is null or mode = $3)
          order by coalesce(sent_at, created_at) desc limit $4",
@@ -187,6 +187,7 @@ async fn orders(State(app): State<Arc<App>>, Query(q): Query<OrdersQuery>) -> Ap
                 "avg_px": r.get::<Option<String>, _>("avg_px"),
                 "sent_at": r.get::<DateTime<Utc>, _>("sent_at"),
                 "done_at": r.get::<Option<DateTime<Utc>>, _>("done_at"),
+                "trace": r.get::<Option<String>, _>("trace").and_then(|t| serde_json::from_str::<Value>(&t).ok()),
             })
         })
         .collect();
