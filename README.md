@@ -5,15 +5,16 @@ a local web page that draws a window of time for one bot and one instrument,
 with both venues' quotes and every order event on top of them.
 
 - Lines: Binance bid/ask (thin), Hyperliquid bid/ask (thick), as step lines.
-- Markers, one per order event, with the whole record on hover: open sent,
-  acked resting / filled / rejected / unknown, fill, cancel sent, cancelled,
-  left resting. An open's marker also carries the decision the calculator
-  recorded: deviation, raw deviation, basis, rho, delta, threshold, expected
-  gain.
+- Markers, one per order event, coloured by side (buy green, sell red), with
+  the whole record on hover. An insert is a right-pointing triangle, solid
+  when the order filled and outline only when it did not; fills are dots;
+  cancels are crosses; a rejection is a circled cross. An open's marker also
+  carries the decision the calculator recorded: deviation, raw deviation,
+  basis, rho, delta, threshold, expected gain.
 - Lower pane: the leader's mid over the lagger's mid in basis points, with
   the open threshold of the last decision as dashed lines.
-- Zoom with the mouse wheel or by dragging a box; double-click resets.
-  Legend entries toggle a series.
+- Drag pans, the scroll wheel or trackpad zooms, double-click resets. Legend
+  entries toggle a series.
 
 Reads Postgres (`bot_orders`, `bot_order_events`) and ClickHouse (`quotes`);
 writes nothing. Rust (axum) serves the data as JSON, the page renders with

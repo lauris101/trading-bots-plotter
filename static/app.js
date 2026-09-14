@@ -75,25 +75,31 @@
   }
 
   // ---- the window ----
+  // Every marker is coloured by side: buys green, sells red. An insert is a
+  // triangle pointing right, solid when the order (partially) filled and
+  // outline only when nothing filled; fills are dots; cancels and rejections
+  // are crosses. Acks that merely confirm a resting or filled state draw
+  // nothing of their own: the insert's marker already carries the outcome.
+  const GREEN = "#3fb950", RED = "#f85149", OTHER = "#c9d1d9";
+  const sideColor = (e) => (e.side === "buy" ? GREEN : e.side === "sell" ? RED : OTHER);
+  const filled = (e) => e.order_status === "filled" || Number(e.order_filled) > 0;
+  // kind key -> [symbol, size, label]
   const KIND = {
-    // kind[:status] -> [symbol, colour, label]
-    "sent": ["triangle-up", "#58a6ff", "open sent"],
-    "sent:ro": ["triangle-down", "#a371f7", "close sent"],
-    "acked:resting": ["circle-open", "#3fb950", "acked: resting"],
-    "acked:filled": ["star", "#3fb950", "acked: filled"],
-    "acked:rejected": ["x", "#f85149", "REJECTED"],
-    "acked:unknown": ["diamond", "#f0883e", "acked: unknown"],
-    "fill": ["circle", "#3fb950", "fill"],
-    "cancel_sent": ["square-open", "#8b98a9", "cancel sent"],
-    "cancelled:ok": ["square", "#8b98a9", "cancelled"],
-    "cancelled:failed": ["square", "#f85149", "cancel FAILED"],
-    "left_resting": ["hexagon", "#f0883e", "left resting"],
+    "sent:filled": ["triangle-right", 13, "insert, filled"],
+    "sent:unfilled": ["triangle-right-open", 13, "insert, not filled"],
+    "acked:rejected": ["circle-x-open", 15, "REJECTED"],
+    "acked:unknown": ["diamond-open", 12, "acked: unknown"],
+    "fill": ["circle", 10, "fill"],
+    "cancel_sent": ["x-open", 11, "cancel sent"],
+    "cancelled:ok": ["x", 11, "cancelled"],
+    "cancelled:failed": ["circle-x", 15, "cancel FAILED"],
+    "left_resting": ["hexagon-open", 12, "left resting"],
   };
   const keyOf = (e) => {
-    if (e.kind === "sent") return e.reduce_only ? "sent:ro" : "sent";
-    if (e.kind === "acked") return `acked:${e.status ?? "unknown"}`;
+    if (e.kind === "sent") return filled(e) ? "sent:filled" : "sent:unfilled";
+    if (e.kind === "acked") return e.status === "rejected" || e.status === "unknown" ? `acked:${e.status}` : null;
     if (e.kind === "cancelled") return `cancelled:${e.status ?? "ok"}`;
-    return e.kind;
+    return KIND[e.kind] ? e.kind : null;
   };
   const priceOf = (e) => {
     const n = (v) => (v == null || v === "" ? null : Number(v));
@@ -103,7 +109,7 @@
   };
   const hover = (e) => {
     const lines = [
-      `<b>${KIND[keyOf(e)]?.[2] ?? e.kind}</b>  ${fmtMs(e.t)} UTC`,
+      `<b>${KIND[keyOf(e)]?.[2] ?? `${e.kind}${e.status ? ": " + e.status : ""}`}</b>  ${fmtMs(e.t)} UTC`,
       `${e.side ?? ""} ${e.exec ?? ""}${e.reduce_only ? " reduce-only" : ""}  reason ${e.reason ?? ""}${e.priority ? `  p${e.priority}` : ""}`,
       `order px ${e.order_px ?? ""}  sz ${e.order_sz ?? ""}  ->  ${e.order_status}${Number(e.order_filled) ? ` ${e.order_filled} @ ${e.order_avg_px}` : ""}`,
     ];
@@ -148,20 +154,23 @@
       traces.push({ type: "scattergl", mode: "lines", name: `${v} bid`, x, y: rows.map((r) => r.bid), line: { shape: "hv", width: st.w, color: st.bid }, hoverinfo: "skip", legendgroup: v });
       traces.push({ type: "scattergl", mode: "lines", name: `${v} ask`, x, y: rows.map((r) => r.ask), line: { shape: "hv", width: st.w, color: st.ask, dash: "dot" }, hoverinfo: "skip", legendgroup: v });
     }
-    // Events, one trace per kind so the legend can toggle them.
+    // Events: one trace per kind and side so the legend can toggle them.
     const groups = {};
     for (const e of w.events) {
       const k = keyOf(e);
+      if (!k) continue;
       const px = priceOf(e);
       if (px == null || !Number.isFinite(px)) continue;
-      (groups[k] ??= []).push({ x: new Date(e.t), y: px, text: hover(e), big: e.kind === "acked" && e.status === "rejected" });
+      const g = `${e.side ?? "none"}|${k}`;
+      (groups[g] ??= { k, side: e.side, color: sideColor(e), pts: [] }).pts.push({ x: new Date(e.t), y: px, text: hover(e) });
     }
-    for (const [k, pts] of Object.entries(groups)) {
-      const [symbol, color, label] = KIND[k] ?? ["circle", "#ccc", k];
+    for (const g of Object.values(groups)) {
+      const [symbol, size, label] = KIND[g.k];
       traces.push({
-        type: "scattergl", mode: "markers", name: label, x: pts.map((p) => p.x), y: pts.map((p) => p.y),
-        text: pts.map((p) => p.text), hovertemplate: "%{text}<extra></extra>",
-        marker: { symbol, color, size: symbol.endsWith("open") ? 12 : 11, line: { width: 1.5, color } },
+        type: "scattergl", mode: "markers", name: `${g.side ?? ""} ${label}`.trim(),
+        x: g.pts.map((p) => p.x), y: g.pts.map((p) => p.y),
+        text: g.pts.map((p) => p.text), hovertemplate: "%{text}<extra></extra>",
+        marker: { symbol, color: g.color, size, line: { width: 1.6, color: g.color } },
       });
     }
     // Deviation pane: leader mid over lagger mid in bps, sampled at the lagger's quotes.
@@ -185,14 +194,14 @@
     }
     const layout = {
       paper_bgcolor: "#0b0e13", plot_bgcolor: "#0f141b", font: { color: "#dde4ec", size: 11 },
-      margin: { l: 70, r: 20, t: 10, b: 40 }, hovermode: "closest", dragmode: "zoom",
+      margin: { l: 70, r: 20, t: 10, b: 40 }, hovermode: "closest", dragmode: "pan",
       legend: { orientation: "h", y: 1.02, x: 0 },
       xaxis: { type: "date", range: [new Date(from), new Date(to)], gridcolor: "#1f2733", tickformat: "%H:%M:%S.%L", hoverformat: "%H:%M:%S.%L" },
       yaxis: { title: inst, domain: [0.32, 1], gridcolor: "#1f2733", tickformat: ".6~g" },
       yaxis2: { title: "bps", domain: [0, 0.26], gridcolor: "#1f2733", zeroline: true, zerolinecolor: "#3a4656" },
       shapes: state.selected ? [] : [],
     };
-    const config = { responsive: true, scrollZoom: true, displaylogo: false, modeBarButtonsToRemove: ["lasso2d", "select2d"] };
+    const config = { responsive: true, scrollZoom: true, displaylogo: false, doubleClick: "reset", modeBarButtonsToRemove: ["lasso2d", "select2d", "zoom2d"] };
     await Plotly.react("plot", traces, layout, config);
     const nq = venues.reduce((a, v) => a + w.quotes.by_venue[v].length, 0);
     status(`${nq} quotes, ${w.events.length} events, ${fmt(from).slice(11, 19)} to ${fmt(to).slice(11, 19)} UTC${w.quotes.bucketed_ms ? `, bucketed to ${w.quotes.bucketed_ms} ms` : ""}`);
