@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>trading-bots plotter</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0b0e13; --panel:#131922; --panel2:#1a2230; --line:#273140; --text:#dde4ec; --muted:#8b98a9; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --amber:#d29922; --mono: ui-monospace, Menlo, Consolas, monospace; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:13px/1.45 system-ui, sans-serif; }
+  .top { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; padding:10px 14px; border-bottom:1px solid var(--line); background:var(--panel); }
+  .top h1 { font-size:15px; margin:0 8px 6px 0; }
+  label.f { display:flex; flex-direction:column; gap:2px; font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+  select, input, button { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:5px 8px; font:13px system-ui, sans-serif; }
+  button { cursor:pointer; } button:hover { border-color:var(--accent); color:var(--accent); }
+  button.on { border-color:var(--accent); color:var(--accent); }
+  .meta { color:var(--muted); font-size:12px; }
+  .body { display:grid; grid-template-columns: 420px 1fr; min-height: calc(100vh - 58px); }
+  .side { border-right:1px solid var(--line); overflow:auto; max-height: calc(100vh - 58px); }
+  .side table { width:100%; border-collapse:collapse; font-size:12px; }
+  .side th, .side td { padding:4px 6px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+  .side th { position:sticky; top:0; background:var(--panel); color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+  .side tr.o { cursor:pointer; } .side tr.o:hover td { background:var(--panel2); } .side tr.sel td { background:#1f2a3a; }
+  .mono { font-family:var(--mono); font-size:11px; }
+  .b { font-family:var(--mono); font-size:10px; padding:2px 6px; border-radius:999px; border:1px solid; text-transform:uppercase; }
+  .b-filled, .b-ok { color:var(--green); border-color:var(--green); }
+  .b-rejected, .b-failed, .b-error { color:var(--red); border-color:var(--red); }
+  .b-resting, .b-sent, .b-partially_filled { color:var(--amber); border-color:var(--amber); }
+  .b-cancelled, .b-left_resting, .b-unknown { color:var(--muted); border-color:var(--muted); }
+  .buy { color:var(--green); } .sell { color:var(--red); }
+  #plot { width:100%; height: calc(100vh - 58px); }
+  .legend { display:flex; gap:12px; flex-wrap:wrap; padding:6px 14px; color:var(--muted); font-size:11px; border-bottom:1px solid var(--line); }
+  .legend span b { font-weight:600; color:var(--text); }
+  #status { padding:8px 14px; color:var(--muted); font-size:12px; }
+  #status.err { color:var(--red); }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>trading-bots plotter</h1>
+  <label class="f">bot <select id="bot"></select></label>
+  <label class="f">instrument <select id="instrument"></select></label>
+  <label class="f">mode <select id="mode"><option value="">live + dummy</option><option value="live">live</option><option value="dummy">dummy</option></select></label>
+  <label class="f">window <select id="span">
+    <option value="20000">20 s</option><option value="60000" selected>1 min</option><option value="180000">3 min</option>
+    <option value="600000">10 min</option><option value="1800000">30 min</option><option value="3600000">1 h</option>
+  </select></label>
+  <label class="f">centre (UTC) <input id="centre" class="mono" style="width:190px" placeholder="click an order, or type"></label>
+  <button id="prev" title="shift the window back">&larr;</button>
+  <button id="next" title="shift the window forward">&rarr;</button>
+  <button id="latest" title="the newest order of this key">latest</button>
+  <button id="reload">reload</button>
+  <span id="status"></span>
+</div>
+<div class="legend">
+  <span><b>lines</b> Binance bid/ask (thin), Hyperliquid bid/ask (thick)</span>
+  <span><b>&#9650;/&#9660;</b> open sent (buy/sell)</span>
+  <span><b>&#9733;</b> acked filled</span>
+  <span><b>&#9675;</b> acked resting</span>
+  <span><b>&#10006;</b> rejected</span>
+  <span><b>&#9679;</b> fill</span>
+  <span><b>&#9633;</b> cancel sent &nbsp; <b>&#9632;</b> cancelled</span>
+  <span><b>&#9670;</b> unknown / left resting</span>
+  <span>lower pane: Binance mid over Hyperliquid mid, bps; dashed = the open threshold of the last decision</span>
+</div>
+<div class="body">
+  <div class="side">
+    <table id="orders"><thead><tr><th>sent (UTC)</th><th>side</th><th>exec</th><th>reason</th><th>px</th><th>sz</th><th>status</th><th>filled</th></tr></thead><tbody></tbody></table>
+  </div>
+  <div id="plot"></div>
+</div>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<script src="/app.js"></script>
+</body>
+</html>
