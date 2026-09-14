@@ -30,8 +30,9 @@ cp .env.example .env     # fill in the two passwords (trading-bots-db/.env)
 just run                 # or: cargo run --release
 ```
 
-Open http://127.0.0.1:8095. The bot and instrument with the newest orders
-are preselected, centred on the newest order; click any order in the list
+Open http://127.0.0.1:8095. Live orders are shown by default (the mode
+selector also offers dummy, or both). The bot and instrument with the newest
+live orders are preselected, centred on the newest order; click any order in the list
 to centre on it; `←` / `→` shift the window by half its length.
 
 Reaching the stores:
