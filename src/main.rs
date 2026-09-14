@@ -65,6 +65,7 @@ fn bad(err: impl std::fmt::Display) -> ApiError {
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
+        .with_ansi(false)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let addr = std::env::var("PLOTTER_ADDR").unwrap_or_else(|_| "127.0.0.1:8095".to_owned());
