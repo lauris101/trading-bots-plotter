@@ -1,10 +1,18 @@
-// The page: pick a key, pick a moment, draw the window. Plotly with WebGL
-// scatter traces (scattergl) so tens of thousands of quotes pan and zoom
-// without stutter; every order event is one marker with the full record on
-// hover.
+// The page: pick a key, pick a moment, draw the window.
+//
+// One 2D canvas, drawn by hand. Nothing runs while nothing happens: a
+// redraw is scheduled only by an interaction (zoom, pan, hover, toggle) or
+// by new data, and takes a few milliseconds for a window of tens of
+// thousands of quotes. No WebGL contexts, no library.
 (() => {
   const $ = (id) => document.getElementById(id);
-  const state = { keys: [], orders: [], centreMs: null, selected: null, lastWindow: null, fullRange: null, dblWired: false };
+  const state = {
+    keys: [], orders: [], centreMs: null, selected: null,
+    win: null,          // the built window: lines, marks, deviation, full range
+    view: null,         // {x0, x1, y0, y1} in ms and price
+    hidden: new Set(),  // series ids toggled off in the legend
+    drag: null, hoverPt: null, raf: 0,
+  };
 
   const fmt = (ms) => new Date(ms).toISOString().replace("T", " ").replace("Z", "");
   const fmtMs = (ms) => fmt(ms).slice(11, 23);
@@ -13,6 +21,7 @@
     return Number.isNaN(t) ? null : t;
   };
   const status = (msg, err = false) => { const el = $("status"); el.textContent = msg; el.className = err ? "err" : ""; };
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
   async function api(path) {
     const r = await fetch(path);
@@ -26,7 +35,7 @@
     const { keys } = await api("/api/bots");
     state.keys = keys;
     const bots = [...new Set(keys.map((k) => k.bot))];
-    $("bot").innerHTML = bots.map((b) => `<option>${b}</option>`).join("");
+    $("bot").innerHTML = bots.map((b) => `<option>${esc(b)}</option>`).join("");
     fillInstruments();
   }
   function fillInstruments() {
@@ -40,27 +49,27 @@
     }
     const list = [...seen.values()].sort((a, b) => (a.last_at < b.last_at ? 1 : -1));
     const prev = $("instrument").value;
-    $("instrument").innerHTML = list.map((k) => `<option value="${k.instrument}">${k.instrument} (${k.orders})</option>`).join("");
+    $("instrument").innerHTML = list.map((k) => `<option value="${esc(k.instrument)}">${esc(k.instrument)} (${k.orders})</option>`).join("");
     if (list.some((k) => k.instrument === prev)) $("instrument").value = prev;
   }
 
   // ---- orders of the key ----
   async function loadOrders() {
     const bot = $("bot").value, inst = $("instrument").value, mode = $("mode").value;
-    if (!bot || !inst) { $("orders").querySelector("tbody").innerHTML = ""; return; }
+    if (!bot || !inst) { $("orders").querySelector("tbody").innerHTML = ""; state.orders = []; return; }
     const { orders } = await api(`/api/orders?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}&mode=${mode}&limit=300`);
     state.orders = orders;
     const tb = $("orders").querySelector("tbody");
     tb.innerHTML = orders.map((o) => `
-      <tr class="o${state.selected === o.cloid ? " sel" : ""}" data-cloid="${o.cloid}" data-t="${Date.parse(o.sent_at)}">
+      <tr class="o${state.selected === o.cloid ? " sel" : ""}" data-cloid="${esc(o.cloid)}" data-t="${Date.parse(o.sent_at)}">
         <td class="mono">${fmt(Date.parse(o.sent_at)).slice(5, 23)}</td>
-        <td class="${o.side ?? ""}">${o.side ?? ""}</td>
-        <td>${o.exec ?? ""}${o.reduce_only ? " ro" : ""}${o.priority ? ` p${o.priority}` : ""}</td>
-        <td>${o.reason ?? ""}</td>
-        <td class="mono">${o.px ?? ""}</td>
-        <td class="mono">${o.sz ?? ""}</td>
-        <td><span class="b b-${o.status}" title="${(o.error ?? "").replace(/"/g, "&quot;")}">${o.status}</span></td>
-        <td class="mono">${Number(o.filled_sz) ? `${o.filled_sz}${o.avg_px ? " @ " + o.avg_px : ""}` : ""}</td>
+        <td class="${esc(o.side)}">${esc(o.side)}</td>
+        <td>${esc(o.exec)}${o.reduce_only ? " ro" : ""}${o.priority ? ` p${o.priority}` : ""}</td>
+        <td>${esc(o.reason)}</td>
+        <td class="mono">${esc(o.px)}</td>
+        <td class="mono">${esc(o.sz)}</td>
+        <td><span class="b b-${esc(o.status)}" title="${esc(o.error)}">${esc(o.status)}</span></td>
+        <td class="mono">${Number(o.filled_sz) ? `${esc(o.filled_sz)}${o.avg_px ? " @ " + esc(o.avg_px) : ""}` : ""}</td>
       </tr>`).join("");
     for (const tr of tb.querySelectorAll("tr.o")) {
       tr.onclick = () => { state.selected = tr.dataset.cloid; setCentre(Number(tr.dataset.t)); };
@@ -71,10 +80,10 @@
     state.centreMs = ms;
     $("centre").value = fmt(ms);
     for (const tr of $("orders").querySelectorAll("tr.o")) tr.classList.toggle("sel", tr.dataset.cloid === state.selected);
-    void draw();
+    void load();
   }
 
-  // ---- the window ----
+  // ---- events -> markers ----
   // Every marker is coloured by side: buys green, sells red. An insert is a
   // triangle pointing right, solid when the order (partially) filled and
   // outline only when nothing filled; fills are dots; cancels and rejections
@@ -83,17 +92,17 @@
   const GREEN = "#3fb950", RED = "#f85149", OTHER = "#c9d1d9";
   const sideColor = (e) => (e.side === "buy" ? GREEN : e.side === "sell" ? RED : OTHER);
   const filled = (e) => e.order_status === "filled" || Number(e.order_filled) > 0;
-  // kind key -> [symbol, size, label]
+  // kind key -> [symbol, size px, solid, label]
   const KIND = {
-    "sent:filled": ["triangle-right", 13, "insert, filled"],
-    "sent:unfilled": ["triangle-right-open", 13, "insert, not filled"],
-    "acked:rejected": ["circle-x-open", 15, "REJECTED"],
-    "acked:unknown": ["diamond-open", 12, "acked: unknown"],
-    "fill": ["circle", 10, "fill"],
-    "cancel_sent": ["x-open", 11, "cancel sent"],
-    "cancelled:ok": ["x", 11, "cancelled"],
-    "cancelled:failed": ["circle-x", 15, "cancel FAILED"],
-    "left_resting": ["hexagon-open", 12, "left resting"],
+    "sent:filled": ["tri", 9, true, "insert, filled"],
+    "sent:unfilled": ["tri", 9, false, "insert, not filled"],
+    "acked:rejected": ["circle-x", 9, false, "REJECTED"],
+    "acked:unknown": ["diamond", 8, false, "acked: unknown"],
+    "fill": ["circle", 5, true, "fill"],
+    "cancel_sent": ["x", 6, false, "cancel sent"],
+    "cancelled:ok": ["x", 6, true, "cancelled"],
+    "cancelled:failed": ["circle-x", 9, true, "cancel FAILED"],
+    "left_resting": ["hexagon", 8, false, "left resting"],
   };
   const keyOf = (e) => {
     if (e.kind === "sent") return filled(e) ? "sent:filled" : "sent:unfilled";
@@ -109,170 +118,414 @@
   };
   const hover = (e) => {
     const lines = [
-      `<b>${KIND[keyOf(e)]?.[2] ?? `${e.kind}${e.status ? ": " + e.status : ""}`}</b>  ${fmtMs(e.t)} UTC`,
-      `${e.side ?? ""} ${e.exec ?? ""}${e.reduce_only ? " reduce-only" : ""}  reason ${e.reason ?? ""}${e.priority ? `  p${e.priority}` : ""}`,
-      `order px ${e.order_px ?? ""}  sz ${e.order_sz ?? ""}  ->  ${e.order_status}${Number(e.order_filled) ? ` ${e.order_filled} @ ${e.order_avg_px}` : ""}`,
+      `<b>${esc(KIND[keyOf(e)]?.[3] ?? `${e.kind}${e.status ? ": " + e.status : ""}`)}</b>  ${fmtMs(e.t)} UTC`,
+      `${esc(e.side)} ${esc(e.exec)}${e.reduce_only ? " reduce-only" : ""}  reason ${esc(e.reason)}${e.priority ? `  p${e.priority}` : ""}`,
+      `order px ${esc(e.order_px)}  sz ${esc(e.order_sz)}  ->  ${esc(e.order_status)}${Number(e.order_filled) ? ` ${esc(e.order_filled)} @ ${esc(e.order_avg_px)}` : ""}`,
     ];
-    if (e.kind === "fill") lines.push(`fill px ${e.px} sz ${e.sz}${e.fee ? ` fee ${e.fee}` : ""}${e.closed_pnl ? ` pnl ${e.closed_pnl}` : ""} (${e.source})`);
-    if (e.kind === "acked" && e.status === "filled") lines.push(`filled ${e.sz} @ ${e.px}`);
-    if (e.error) lines.push(`<span style="color:#f85149">${e.error}</span>`);
-    if (e.batch != null) lines.push(`batch ${e.batch}  ${e.mode}  ${e.cloid.slice(0, 10)}..`);
+    if (e.kind === "fill") lines.push(`fill px ${esc(e.px)} sz ${esc(e.sz)}${e.fee ? ` fee ${esc(e.fee)}` : ""}${e.closed_pnl ? ` pnl ${esc(e.closed_pnl)}` : ""} (${esc(e.source)})`);
+    if (e.kind === "acked" && e.status === "filled") lines.push(`filled ${esc(e.sz)} @ ${esc(e.px)}`);
+    if (e.error) lines.push(`<span style="color:#f85149">${esc(e.error)}</span>`);
+    if (e.batch != null) lines.push(`batch ${e.batch}  ${esc(e.mode)}  ${esc(String(e.cloid).slice(0, 10))}..`);
     const d = e.decision;
     if (d) {
-      lines.push(`<b>decision</b> dev ${d.deviation_bps?.toFixed?.(1)} bps (raw ${d.raw_deviation_bps?.toFixed?.(1)}), basis ${d.basis_bps == null ? "-" : d.basis_bps.toFixed(1)}`);
-      lines.push(`threshold ${d.threshold_bps?.toFixed?.(1)} bps, gain ${d.gain_bps?.toFixed?.(1)} (raw ${d.raw_gain_bps?.toFixed?.(1)}), rho ${d.rho?.toFixed?.(2)}, delta ${d.delta_ms?.toFixed?.(0)} ms`);
-      lines.push(`leader mid ${d.leader_mid}  lagger ${d.lagger_bid} / ${d.lagger_ask}`);
+      const f = (v, p = 1) => (typeof v === "number" ? v.toFixed(p) : "-");
+      lines.push(`<b>decision</b> dev ${f(d.deviation_bps)} bps (raw ${f(d.raw_deviation_bps)}), basis ${f(d.basis_bps)}`);
+      lines.push(`threshold ${f(d.threshold_bps)} bps, gain ${f(d.gain_bps)} (raw ${f(d.raw_gain_bps)}), rho ${f(d.rho, 2)}, delta ${f(d.delta_ms, 0)} ms`);
+      lines.push(`leader mid ${esc(d.leader_mid)}  lagger ${esc(d.lagger_bid)} / ${esc(d.lagger_ask)}`);
     }
     return lines.join("<br>");
   };
 
-  async function draw() {
+  // ---- load a window and build the drawable series ----
+  const VENUE = {
+    binance_perps: { width: 1, color: "#3d7bd6", label: "binance" },
+    binance: { width: 1, color: "#5aa0ff", label: "binance spot" },
+    hyperliquid: { width: 2, color: "#e3b341", label: "hyperliquid" },
+  };
+
+  async function load() {
     const bot = $("bot").value, inst = $("instrument").value, mode = $("mode").value;
     if (!bot || !inst || state.centreMs == null) return;
     const span = Number($("span").value);
-    const from = state.centreMs - span / 2, to = state.centreMs + span / 2;
+    const from = Math.floor(state.centreMs - span / 2), to = Math.ceil(state.centreMs + span / 2);
     status("loading");
     let w;
     try {
-      w = await api(`/api/window?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}&mode=${mode}&from_ms=${Math.floor(from)}&to_ms=${Math.ceil(to)}`);
+      w = await api(`/api/window?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}&mode=${mode}&from_ms=${from}&to_ms=${to}`);
     } catch (e) {
       status(e.message, true);
       return;
     }
-    state.lastWindow = w;
-    const traces = [];
+    state.win = build(w, from, to, inst);
+    state.view = { ...state.win.full };
+    renderLegend();
+    const nq = state.win.lines.reduce((a, l) => a + (l.id.endsWith(":bid") ? l.t.length : 0), 0);
+    status(`${nq} quotes, ${w.events.length} events, ${fmt(from).slice(11, 19)} to ${fmt(to).slice(11, 19)} UTC${w.quotes.bucketed_ms ? `, bucketed to ${w.quotes.bucketed_ms} ms` : ""}`);
+    requestDraw();
+  }
+
+  function build(w, from, to, inst) {
     const venues = Object.keys(w.quotes.by_venue).sort();
-    const styles = {
-      binance_perps: { w: 1, bid: "#3d7bd6", ask: "#3d7bd6" },
-      binance: { w: 1, bid: "#5aa0ff", ask: "#5aa0ff" },
-      hyperliquid: { w: 2.2, bid: "#e3b341", ask: "#e3b341" },
-    };
+    const lines = [];
+    let lo = Infinity, hi = -Infinity;
     for (const v of venues) {
       const rows = w.quotes.by_venue[v];
-      const st = styles[v] ?? { w: 1.5, bid: "#aaa", ask: "#aaa" };
-      const x = rows.map((r) => new Date(r.t));
-      traces.push({ type: "scattergl", mode: "lines", name: `${v} bid`, x, y: rows.map((r) => r.bid), line: { shape: "hv", width: st.w, color: st.bid }, hoverinfo: "skip", legendgroup: v });
-      traces.push({ type: "scattergl", mode: "lines", name: `${v} ask`, x, y: rows.map((r) => r.ask), line: { shape: "hv", width: st.w, color: st.ask, dash: "dot" }, hoverinfo: "skip", legendgroup: v });
+      const st = VENUE[v] ?? { width: 1.5, color: "#aaa", label: v };
+      const t = new Float64Array(rows.length), bid = new Float64Array(rows.length), ask = new Float64Array(rows.length);
+      rows.forEach((r, i) => { t[i] = r.t; bid[i] = r.bid; ask[i] = r.ask; if (r.bid < lo) lo = r.bid; if (r.ask > hi) hi = r.ask; });
+      lines.push({ id: `${v}:bid`, name: `${st.label} bid`, color: st.color, width: st.width, dash: null, t, v: bid });
+      lines.push({ id: `${v}:ask`, name: `${st.label} ask`, color: st.color, width: st.width, dash: [4, 3], t, v: ask });
     }
-    // Events: one trace per kind and side so the legend can toggle them.
     const groups = {};
     for (const e of w.events) {
       const k = keyOf(e);
       if (!k) continue;
       const px = priceOf(e);
       if (px == null || !Number.isFinite(px)) continue;
-      const g = `${e.side ?? "none"}|${k}`;
-      (groups[g] ??= { k, side: e.side, color: sideColor(e), pts: [] }).pts.push({ x: new Date(e.t), y: px, text: hover(e) });
+      const id = `${e.side ?? "none"}|${k}`;
+      const [symbol, size, solid, label] = KIND[k];
+      (groups[id] ??= { id, name: `${e.side ?? ""} ${label}`.trim(), color: sideColor(e), symbol, size, solid, pts: [] })
+        .pts.push({ t: e.t, y: px, text: hover(e) });
+      if (px < lo) lo = px; if (px > hi) hi = px;
     }
-    for (const g of Object.values(groups)) {
-      const [symbol, size, label] = KIND[g.k];
-      traces.push({
-        type: "scattergl", mode: "markers", name: `${g.side ?? ""} ${label}`.trim(),
-        x: g.pts.map((p) => p.x), y: g.pts.map((p) => p.y),
-        text: g.pts.map((p) => p.text), hovertemplate: "%{text}<extra></extra>",
-        marker: { symbol, color: g.color, size, line: { width: 1.6, color: g.color } },
-      });
-    }
-    // Deviation pane: leader mid over lagger mid in bps, sampled at the lagger's quotes.
+    const marks = Object.values(groups);
+    // Deviation: leader mid over lagger mid in bps, sampled at the lagger's quotes.
     const leader = w.quotes.by_venue.binance_perps ?? w.quotes.by_venue.binance ?? [];
     const lagger = w.quotes.by_venue.hyperliquid ?? [];
-    if (leader.length && lagger.length) {
-      const xs = [], ys = [];
-      let i = 0;
-      for (const q of lagger) {
-        while (i + 1 < leader.length && leader[i + 1].t <= q.t) i++;
-        if (leader[i].t > q.t) continue;
-        const lm = (leader[i].bid + leader[i].ask) / 2, hm = (q.bid + q.ask) / 2;
-        xs.push(new Date(q.t)); ys.push(10000 * (lm / hm - 1));
-      }
-      traces.push({ type: "scattergl", mode: "lines", name: "leader over lagger, bps", x: xs, y: ys, line: { width: 1.2, color: "#c9d1d9", shape: "hv" }, yaxis: "y2", hovertemplate: "%{y:.1f} bps<extra></extra>" });
-      const last = [...w.events].reverse().find((e) => e.decision?.threshold_bps != null);
-      if (last) {
-        const th = last.decision.threshold_bps;
-        for (const s of [th, -th]) traces.push({ type: "scattergl", mode: "lines", name: `threshold ${th.toFixed(1)} bps`, x: [new Date(from), new Date(to)], y: [s, s], line: { width: 1, dash: "dash", color: "#8b98a9" }, yaxis: "y2", hoverinfo: "skip", showlegend: s > 0 });
-      }
+    const dev = { t: [], v: [] };
+    let i = 0;
+    for (const q of lagger) {
+      while (i + 1 < leader.length && leader[i + 1].t <= q.t) i++;
+      if (!leader.length || leader[i].t > q.t) continue;
+      const lm = (leader[i].bid + leader[i].ask) / 2, hm = (q.bid + q.ask) / 2;
+      dev.t.push(q.t); dev.v.push(10000 * (lm / hm - 1));
     }
-    // The full extent of the loaded window: the whole time span and every
-    // quote and marker in it. Double-click returns here.
-    let lo = Infinity, hi = -Infinity;
-    for (const v of venues) for (const r of w.quotes.by_venue[v]) { if (r.bid < lo) lo = r.bid; if (r.ask > hi) hi = r.ask; }
-    for (const g of Object.values(groups)) for (const p of g.pts) { if (p.y < lo) lo = p.y; if (p.y > hi) hi = p.y; }
-    const pad = Number.isFinite(lo) && hi > lo ? (hi - lo) * 0.05 : Math.abs(lo || 1) * 0.001;
-    state.fullRange = { x: [new Date(from), new Date(to)], y: Number.isFinite(lo) ? [lo - pad, hi + pad] : undefined };
-    const layout = {
-      paper_bgcolor: "#0b0e13", plot_bgcolor: "#0f141b", font: { color: "#dde4ec", size: 11 },
-      margin: { l: 70, r: 20, t: 10, b: 40 }, hovermode: "closest", dragmode: "zoom",
-      legend: { orientation: "h", y: 1.02, x: 0 },
-      xaxis: { type: "date", range: state.fullRange.x, gridcolor: "#1f2733", tickformat: "%H:%M:%S.%L", hoverformat: "%H:%M:%S.%L" },
-      yaxis: { title: inst, domain: [0.32, 1], gridcolor: "#1f2733", tickformat: ".6~g", range: state.fullRange.y, autorange: state.fullRange.y == null },
-      yaxis2: { title: "bps", domain: [0, 0.26], gridcolor: "#1f2733", zeroline: true, zerolinecolor: "#3a4656" },
-      shapes: state.selected ? [] : [],
-    };
-    const config = { responsive: true, scrollZoom: false, displaylogo: false, doubleClick: false, modeBarButtonsToRemove: ["lasso2d", "select2d"] };
-    await Plotly.react("plot", traces, layout, config);
-    if (!state.dblWired) {
-      state.dblWired = true;
-      $("plot").on("plotly_doubleclick", () => {
-        const r = state.fullRange;
-        if (!r) return;
-        const upd = { "xaxis.range": r.x, "yaxis2.autorange": true };
-        if (r.y) upd["yaxis.range"] = r.y; else upd["yaxis.autorange"] = true;
-        Plotly.relayout("plot", upd);
-      });
-    }
-    const nq = venues.reduce((a, v) => a + w.quotes.by_venue[v].length, 0);
-    status(`${nq} quotes, ${w.events.length} events, ${fmt(from).slice(11, 19)} to ${fmt(to).slice(11, 19)} UTC${w.quotes.bucketed_ms ? `, bucketed to ${w.quotes.bucketed_ms} ms` : ""}`);
+    const last = [...w.events].reverse().find((e) => e.decision?.threshold_bps != null);
+    const threshold = last ? last.decision.threshold_bps : null;
+    const pad = Number.isFinite(lo) && hi > lo ? (hi - lo) * 0.06 : Math.abs(lo || 1) * 0.001;
+    const full = { x0: from, x1: to, y0: Number.isFinite(lo) ? lo - pad : 0, y1: Number.isFinite(hi) ? hi + pad : 1 };
+    return { inst, lines, marks, dev, threshold, full };
   }
 
-  // ---- trackpad: two fingers pan, pinch (or ctrl/cmd + wheel) zooms ----
-  // Plotly's own scroll handling only zooms, so the wheel is handled here.
-  // The content follows the fingers; a pinch zooms both axes of the price
-  // pane around the cursor and only the time axis of the bps pane.
-  const plotEl = $("plot");
-  let pending = null;
-  plotEl.addEventListener("wheel", (ev) => {
-    const fl = plotEl._fullLayout;
-    if (!fl || !fl.xaxis || !fl.xaxis._length) return;
+  // ---- legend: every line and marker group toggles on its own ----
+  function renderLegend() {
+    const el = $("legend");
+    const items = [
+      ...state.win.lines.map((l) => ({ id: l.id, name: l.name, color: l.color, kind: l.dash ? "dash" : "line" })),
+      ...state.win.marks.map((m) => ({ id: m.id, name: m.name, color: m.color, kind: m.symbol, solid: m.solid })),
+    ];
+    el.innerHTML = items.map((it) => `<button class="lg${state.hidden.has(it.id) ? " off" : ""}" data-id="${esc(it.id)}"><canvas width="22" height="14"></canvas>${esc(it.name)}</button>`).join("")
+      + `<span class="help"><b>drag</b> selects an area to zoom, <b>two fingers</b> pan, <b>pinch</b> (or ctrl + wheel) zooms, <b>double-click</b> shows the whole window</span>`;
+    for (const btn of el.querySelectorAll("button.lg")) {
+      const it = items.find((x) => x.id === btn.dataset.id);
+      const c = btn.querySelector("canvas").getContext("2d");
+      if (it.kind === "line" || it.kind === "dash") {
+        c.strokeStyle = it.color; c.lineWidth = 2; if (it.kind === "dash") c.setLineDash([4, 3]);
+        c.beginPath(); c.moveTo(1, 7); c.lineTo(21, 7); c.stroke();
+      } else {
+        drawSymbol(c, it.kind, 11, 7, 6, it.color, it.solid);
+      }
+      btn.onclick = () => {
+        if (state.hidden.has(it.id)) state.hidden.delete(it.id); else state.hidden.add(it.id);
+        btn.classList.toggle("off", state.hidden.has(it.id));
+        requestDraw();
+      };
+    }
+  }
+
+  // ---- the canvas ----
+  const cv = $("plot"), ctx = cv.getContext("2d"), wrap = $("plotwrap"), tip = $("tip");
+  const M = { l: 74, r: 16, t: 10, b: 30, gap: 26 };
+  let W = 0, H = 0; // css pixels
+  function panes() {
+    const inner = H - M.t - M.b - M.gap;
+    const ph = Math.max(50, inner * 0.7);
+    return {
+      price: { top: M.t, h: ph },
+      bps: { top: M.t + ph + M.gap, h: Math.max(30, inner - ph) },
+      left: M.l, w: Math.max(10, W - M.l - M.r),
+    };
+  }
+  const xPx = (P, t, v) => P.left + ((t - v.x0) / (v.x1 - v.x0)) * P.w;
+  const pxX = (P, x, v) => v.x0 + ((x - P.left) / P.w) * (v.x1 - v.x0);
+  const yPx = (pane, val, lo, hi) => pane.top + ((hi - val) / (hi - lo)) * pane.h;
+  const pxY = (pane, y, lo, hi) => hi - ((y - pane.top) / pane.h) * (hi - lo);
+
+  function resize() {
+    const r = wrap.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    W = Math.max(100, Math.floor(r.width)); H = Math.max(100, Math.floor(r.height));
+    cv.width = Math.floor(W * dpr); cv.height = Math.floor(H * dpr);
+    cv.style.width = `${W}px`; cv.style.height = `${H}px`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    requestDraw();
+  }
+  new ResizeObserver(resize).observe(wrap);
+
+  function requestDraw() {
+    if (state.raf) return;
+    state.raf = requestAnimationFrame(() => { state.raf = 0; draw(); });
+  }
+
+  // binary search: first index with t[i] >= x
+  function lowerBound(t, x) {
+    let lo = 0, hi = t.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (t[mid] < x) lo = mid + 1; else hi = mid; }
+    return lo;
+  }
+
+  function timeTicks(v, wpx) {
+    const steps = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 15000, 30000, 60000, 120000, 300000, 600000, 900000, 1800000, 3600000];
+    const span = v.x1 - v.x0;
+    const step = steps.find((s) => span / s <= wpx / 95) ?? 3600000;
+    const out = [];
+    for (let t = Math.ceil(v.x0 / step) * step; t <= v.x1; t += step) out.push({ t, label: step < 1000 ? fmtMs(t) : fmt(t).slice(11, 19) });
+    return out;
+  }
+  function valueTicks(lo, hi, hpx, minPx = 38) {
+    if (!(hi > lo)) return [];
+    const raw = (hi - lo) / Math.max(1, hpx / minPx);
+    const mag = 10 ** Math.floor(Math.log10(raw));
+    const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) ?? raw;
+    const dp = Math.max(0, -Math.floor(Math.log10(step)) + (step / mag === 2.5 ? 1 : 0));
+    const out = [];
+    for (let y = Math.ceil(lo / step) * step; y <= hi + step * 1e-9; y += step) out.push({ y, label: y.toFixed(Math.min(dp, 10)) });
+    return out;
+  }
+
+  function drawSymbol(c, sym, x, y, s, color, solid) {
+    c.strokeStyle = color; c.fillStyle = color; c.lineWidth = solid && sym === "x" ? 2.6 : 1.6;
+    c.beginPath();
+    switch (sym) {
+      case "tri": c.moveTo(x - s * 0.7, y - s * 0.8); c.lineTo(x + s * 0.9, y); c.lineTo(x - s * 0.7, y + s * 0.8); c.closePath(); break;
+      case "circle": c.arc(x, y, s, 0, Math.PI * 2); break;
+      case "x": c.moveTo(x - s, y - s); c.lineTo(x + s, y + s); c.moveTo(x + s, y - s); c.lineTo(x - s, y + s); break;
+      case "circle-x": c.arc(x, y, s, 0, Math.PI * 2); c.moveTo(x - s * 0.6, y - s * 0.6); c.lineTo(x + s * 0.6, y + s * 0.6); c.moveTo(x + s * 0.6, y - s * 0.6); c.lineTo(x - s * 0.6, y + s * 0.6); break;
+      case "diamond": c.moveTo(x, y - s); c.lineTo(x + s, y); c.lineTo(x, y + s); c.lineTo(x - s, y); c.closePath(); break;
+      case "hexagon": for (let k = 0; k < 6; k++) { const a = Math.PI / 6 + (k * Math.PI) / 3; const px = x + s * Math.cos(a), py = y + s * Math.sin(a); if (k) c.lineTo(px, py); else c.moveTo(px, py); } c.closePath(); break;
+      default: c.arc(x, y, s, 0, Math.PI * 2);
+    }
+    if (solid && sym !== "x" && sym !== "circle-x") c.fill();
+    if (sym === "circle-x" && solid) { c.stroke(); c.beginPath(); c.arc(x, y, s, 0, Math.PI * 2); c.globalAlpha = 0.35; c.fill(); c.globalAlpha = 1; return; }
+    c.stroke();
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#0b0e13"; ctx.fillRect(0, 0, W, H);
+    const w = state.win, v = state.view;
+    if (!w || !v) return;
+    const P = panes();
+    ctx.font = "11px ui-monospace, Menlo, Consolas, monospace";
+    ctx.textBaseline = "middle";
+
+    // panes' background and grid
+    for (const pane of [P.price, P.bps]) { ctx.fillStyle = "#0f141b"; ctx.fillRect(P.left, pane.top, P.w, pane.h); }
+    const xt = timeTicks(v, P.w);
+    ctx.strokeStyle = "#1f2733"; ctx.lineWidth = 1;
+    for (const tk of xt) {
+      const x = Math.round(xPx(P, tk.t, v)) + 0.5;
+      ctx.beginPath(); ctx.moveTo(x, P.price.top); ctx.lineTo(x, P.price.top + P.price.h); ctx.moveTo(x, P.bps.top); ctx.lineTo(x, P.bps.top + P.bps.h); ctx.stroke();
+    }
+    ctx.fillStyle = "#8b98a9"; ctx.textAlign = "center";
+    for (const tk of xt) ctx.fillText(tk.label, xPx(P, tk.t, v), H - M.b / 2);
+
+    // ---- price pane ----
+    const yt = valueTicks(v.y0, v.y1, P.price.h);
+    ctx.textAlign = "right";
+    for (const tk of yt) {
+      const y = Math.round(yPx(P.price, tk.y, v.y0, v.y1)) + 0.5;
+      ctx.strokeStyle = "#1f2733"; ctx.beginPath(); ctx.moveTo(P.left, y); ctx.lineTo(P.left + P.w, y); ctx.stroke();
+      ctx.fillStyle = "#8b98a9"; ctx.fillText(tk.label, P.left - 6, y);
+    }
+    ctx.save(); ctx.beginPath(); ctx.rect(P.left, P.price.top, P.w, P.price.h); ctx.clip();
+    for (const l of w.lines) {
+      if (state.hidden.has(l.id) || !l.t.length) continue;
+      let i0 = lowerBound(l.t, v.x0); if (i0 > 0) i0--;
+      const i1 = Math.min(l.t.length - 1, lowerBound(l.t, v.x1));
+      ctx.strokeStyle = l.color; ctx.lineWidth = l.width; ctx.setLineDash(l.dash ?? []);
+      ctx.beginPath();
+      let px = xPx(P, l.t[i0], v), py = yPx(P.price, l.v[i0], v.y0, v.y1);
+      ctx.moveTo(px, py);
+      for (let i = i0 + 1; i <= i1; i++) {
+        const nx = xPx(P, l.t[i], v), ny = yPx(P.price, l.v[i], v.y0, v.y1);
+        // step: hold the old value to the new time, then jump
+        if (nx - px >= 0.5 || Math.abs(ny - py) >= 0.5) { ctx.lineTo(nx, py); ctx.lineTo(nx, ny); px = nx; py = ny; }
+      }
+      ctx.lineTo(P.left + P.w, py);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    for (const m of w.marks) {
+      if (state.hidden.has(m.id)) continue;
+      for (const p of m.pts) {
+        if (p.t < v.x0 || p.t > v.x1) continue;
+        drawSymbol(ctx, m.symbol, xPx(P, p.t, v), yPx(P.price, p.y, v.y0, v.y1), m.size, m.color, m.solid);
+      }
+    }
+    if (state.hoverPt) {
+      const p = state.hoverPt;
+      ctx.strokeStyle = "#dde4ec"; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(xPx(P, p.t, v), yPx(P.price, p.y, v.y0, v.y1), p.size + 5, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.restore();
+    ctx.save(); ctx.translate(14, P.price.top + P.price.h / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillStyle = "#8b98a9"; ctx.fillText(w.inst, 0, 0); ctx.restore();
+
+    // ---- bps pane: autoscaled to what is visible ----
+    let blo = -1, bhi = 1;
+    const d = w.dev;
+    if (d.t.length) {
+      let i0 = lowerBound(d.t, v.x0); if (i0 > 0) i0--;
+      const i1 = Math.min(d.t.length - 1, lowerBound(d.t, v.x1));
+      let lo = Infinity, hi = -Infinity;
+      for (let i = i0; i <= i1; i++) { if (d.v[i] < lo) lo = d.v[i]; if (d.v[i] > hi) hi = d.v[i]; }
+      if (w.threshold != null) { lo = Math.min(lo, -w.threshold); hi = Math.max(hi, w.threshold); }
+      lo = Math.min(lo, 0); hi = Math.max(hi, 0);
+      if (Number.isFinite(lo) && hi > lo) { const pad = (hi - lo) * 0.08; blo = lo - pad; bhi = hi + pad; }
+    }
+    const bt = valueTicks(blo, bhi, P.bps.h, 28);
+    ctx.textAlign = "right";
+    for (const tk of bt) {
+      const y = Math.round(yPx(P.bps, tk.y, blo, bhi)) + 0.5;
+      ctx.strokeStyle = tk.y === 0 ? "#3a4656" : "#1f2733"; ctx.beginPath(); ctx.moveTo(P.left, y); ctx.lineTo(P.left + P.w, y); ctx.stroke();
+      ctx.fillStyle = "#8b98a9"; ctx.fillText(tk.label, P.left - 6, y);
+    }
+    ctx.save(); ctx.beginPath(); ctx.rect(P.left, P.bps.top, P.w, P.bps.h); ctx.clip();
+    if (w.threshold != null) {
+      ctx.strokeStyle = "#8b98a9"; ctx.lineWidth = 1; ctx.setLineDash([5, 4]);
+      for (const s of [w.threshold, -w.threshold]) { const y = yPx(P.bps, s, blo, bhi); ctx.beginPath(); ctx.moveTo(P.left, y); ctx.lineTo(P.left + P.w, y); ctx.stroke(); }
+      ctx.setLineDash([]);
+    }
+    if (d.t.length) {
+      let i0 = lowerBound(d.t, v.x0); if (i0 > 0) i0--;
+      const i1 = Math.min(d.t.length - 1, lowerBound(d.t, v.x1));
+      ctx.strokeStyle = "#c9d1d9"; ctx.lineWidth = 1.2; ctx.beginPath();
+      let py = yPx(P.bps, d.v[i0], blo, bhi);
+      ctx.moveTo(xPx(P, d.t[i0], v), py);
+      for (let i = i0 + 1; i <= i1; i++) { const x = xPx(P, d.t[i], v); ctx.lineTo(x, py); py = yPx(P.bps, d.v[i], blo, bhi); ctx.lineTo(x, py); }
+      ctx.lineTo(P.left + P.w, py);
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.save(); ctx.translate(14, P.bps.top + P.bps.h / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillStyle = "#8b98a9";
+    ctx.fillText(w.threshold != null ? `leader over lagger, bps (dashed: threshold ${w.threshold.toFixed(1)})` : "leader over lagger, bps", 0, 0); ctx.restore();
+
+    // ---- rubber band ----
+    if (state.drag && state.drag.moved) {
+      const dg = state.drag;
+      ctx.strokeStyle = "#58a6ff"; ctx.fillStyle = "rgba(88,166,255,0.12)"; ctx.setLineDash([4, 3]); ctx.lineWidth = 1;
+      const x = Math.min(dg.x0, dg.x), y = Math.min(dg.y0, dg.y), bw = Math.abs(dg.x - dg.x0), bh = Math.abs(dg.y - dg.y0);
+      ctx.fillRect(x, y, bw, bh); ctx.strokeRect(x + 0.5, y + 0.5, bw, bh); ctx.setLineDash([]);
+    }
+  }
+
+  // ---- interaction ----
+  const pos = (ev) => { const r = cv.getBoundingClientRect(); return { x: ev.clientX - r.left, y: ev.clientY - r.top }; };
+  const inPrice = (P, y) => y >= P.price.top && y <= P.price.top + P.price.h;
+
+  cv.addEventListener("mousedown", (ev) => {
+    if (ev.button !== 0 || !state.view) return;
+    const p = pos(ev);
+    state.drag = { x0: p.x, y0: p.y, x: p.x, y: p.y, moved: false };
     ev.preventDefault();
-    const xa = fl.xaxis, ya = fl.yaxis, y2 = fl.yaxis2;
-    const scale = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? fl.height : 1;
+  });
+  window.addEventListener("mousemove", (ev) => {
+    if (!state.view) return;
+    const p = pos(ev);
+    if (state.drag) {
+      state.drag.x = p.x; state.drag.y = p.y;
+      if (Math.abs(p.x - state.drag.x0) > 4 || Math.abs(p.y - state.drag.y0) > 4) state.drag.moved = true;
+      requestDraw();
+      return;
+    }
+    if (ev.target !== cv) { if (state.hoverPt) { state.hoverPt = null; tip.hidden = true; requestDraw(); } return; }
+    // nearest marker within 10 px in the price pane
+    const P = panes(), v = state.view;
+    let best = null, bd = 10 * 10;
+    if (inPrice(P, p.y)) {
+      for (const m of state.win.marks) {
+        if (state.hidden.has(m.id)) continue;
+        for (const pt of m.pts) {
+          if (pt.t < v.x0 || pt.t > v.x1) continue;
+          const dx = xPx(P, pt.t, v) - p.x, dy = yPx(P.price, pt.y, v.y0, v.y1) - p.y, dd = dx * dx + dy * dy;
+          if (dd < bd) { bd = dd; best = { ...pt, size: m.size }; }
+        }
+      }
+    }
+    if (best) {
+      tip.innerHTML = best.text; tip.hidden = false;
+      const tx = Math.min(p.x + 14, W - tip.offsetWidth - 8), ty = Math.min(p.y + 14, H - tip.offsetHeight - 8);
+      tip.style.left = `${Math.max(0, tx)}px`; tip.style.top = `${Math.max(0, ty)}px`;
+    } else tip.hidden = true;
+    if ((best?.t !== state.hoverPt?.t) || (best?.y !== state.hoverPt?.y)) { state.hoverPt = best; requestDraw(); }
+    if (p.x >= P.left && p.x <= P.left + P.w) {
+      const t = pxX(P, p.x, v);
+      $("cursor").textContent = inPrice(P, p.y) ? `${fmtMs(t)}  ${pxY(P.price, p.y, v.y0, v.y1).toPrecision(6)}` : fmtMs(t);
+    }
+  });
+  window.addEventListener("mouseup", (ev) => {
+    const dg = state.drag;
+    if (!dg) return;
+    state.drag = null;
+    if (!dg.moved) { requestDraw(); return; }
+    const P = panes(), v = state.view;
+    const xa = Math.min(dg.x0, dg.x), xb = Math.max(dg.x0, dg.x);
+    const nv = { ...v, x0: pxX(P, xa, v), x1: pxX(P, xb, v) };
+    if (inPrice(P, dg.y0) && inPrice(P, dg.y)) {
+      const ya = Math.min(dg.y0, dg.y), yb = Math.max(dg.y0, dg.y);
+      nv.y1 = pxY(P.price, ya, v.y0, v.y1); nv.y0 = pxY(P.price, yb, v.y0, v.y1);
+    }
+    if (nv.x1 - nv.x0 >= 5 && nv.y1 > nv.y0) state.view = nv;
+    requestDraw();
+  });
+  cv.addEventListener("dblclick", (ev) => {
+    ev.preventDefault();
+    state.drag = null;
+    if (state.win) { state.view = { ...state.win.full }; requestDraw(); }
+  });
+  // Trackpad: two fingers pan (the content follows the fingers), pinch or
+  // ctrl/cmd + wheel zooms around the cursor. The bps pane follows the time axis.
+  cv.addEventListener("wheel", (ev) => {
+    if (!state.view) return;
+    ev.preventDefault();
+    const P = panes(), v = state.view, p = pos(ev);
+    const scale = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? H : 1;
     const dx = ev.deltaX * scale, dy = ev.deltaY * scale;
-    const [x0, x1] = xa.range.map(xa.r2l), [y0, y1] = ya.range.map(ya.r2l);
-    const upd = {};
     if (ev.ctrlKey || ev.metaKey) {
       const f = Math.exp(dy * 0.01);
-      const rect = plotEl.getBoundingClientRect();
-      const fx = Math.min(1, Math.max(0, (ev.clientX - rect.left - xa._offset) / xa._length));
-      const fy = Math.min(1, Math.max(0, 1 - (ev.clientY - rect.top - ya._offset) / ya._length));
-      const cx = x0 + fx * (x1 - x0), cy = y0 + fy * (y1 - y0);
-      upd["xaxis.range"] = [xa.l2r(cx - (cx - x0) * f), xa.l2r(cx + (x1 - cx) * f)];
-      upd["yaxis.range"] = [ya.l2r(cy - (cy - y0) * f), ya.l2r(cy + (y1 - cy) * f)];
+      const fx = Math.min(1, Math.max(0, (p.x - P.left) / P.w));
+      const cx = v.x0 + fx * (v.x1 - v.x0);
+      const nv = { x0: cx - (cx - v.x0) * f, x1: cx + (v.x1 - cx) * f, y0: v.y0, y1: v.y1 };
+      if (inPrice(P, p.y)) {
+        const cy = pxY(P.price, p.y, v.y0, v.y1);
+        nv.y0 = cy - (cy - v.y0) * f; nv.y1 = cy + (v.y1 - cy) * f;
+      }
+      if (nv.x1 - nv.x0 >= 5) state.view = nv;
     } else {
-      const kx = (x1 - x0) / xa._length, ky = (y1 - y0) / ya._length;
-      upd["xaxis.range"] = [xa.l2r(x0 + dx * kx), xa.l2r(x1 + dx * kx)];
-      upd["yaxis.range"] = [ya.l2r(y0 - dy * ky), ya.l2r(y1 - dy * ky)];
+      const kx = (v.x1 - v.x0) / P.w, ky = (v.y1 - v.y0) / P.price.h;
+      state.view = { x0: v.x0 + dx * kx, x1: v.x1 + dx * kx, y0: v.y0 - dy * ky, y1: v.y1 - dy * ky };
     }
-    if (y2 && y2.range) upd["yaxis2.range"] = y2.range;
-    pending = upd;
-    requestAnimationFrame(() => { if (pending) { const u = pending; pending = null; Plotly.relayout(plotEl, u); } });
+    requestDraw();
   }, { passive: false });
+  cv.addEventListener("mouseleave", () => { tip.hidden = true; if (state.hoverPt) { state.hoverPt = null; requestDraw(); } });
 
   // ---- wiring ----
   $("bot").onchange = async () => { fillInstruments(); await loadOrders(); jumpLatest(); };
   $("instrument").onchange = async () => { await loadOrders(); jumpLatest(); };
   $("mode").onchange = async () => { fillInstruments(); await loadOrders(); jumpLatest(); };
-  $("span").onchange = () => void draw();
+  $("span").onchange = () => void load();
   $("centre").onchange = () => { const t = parseCentre($("centre").value); if (t != null) { state.selected = null; setCentre(t); } };
   $("prev").onclick = () => setCentre(state.centreMs - Number($("span").value) / 2);
   $("next").onclick = () => setCentre(state.centreMs + Number($("span").value) / 2);
   $("latest").onclick = jumpLatest;
-  $("reload").onclick = async () => { await loadKeys(); await loadOrders(); void draw(); };
+  $("reload").onclick = async () => { await loadKeys(); await loadOrders(); void load(); };
   function jumpLatest() {
     const o = state.orders[0];
-    if (o) { state.selected = o.cloid; setCentre(Date.parse(o.sent_at)); } else { status("no orders for this key"); Plotly.purge("plot"); }
+    if (o) { state.selected = o.cloid; setCentre(Date.parse(o.sent_at)); }
+    else { status("no orders for this key"); state.win = null; state.view = null; $("legend").innerHTML = ""; requestDraw(); }
   }
   (async () => {
     try {
+      resize();
       await loadKeys();
       await loadOrders();
       jumpLatest();

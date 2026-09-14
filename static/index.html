@@ -28,8 +28,14 @@
   .b-resting, .b-sent, .b-partially_filled { color:var(--amber); border-color:var(--amber); }
   .b-cancelled, .b-left_resting, .b-unknown { color:var(--muted); border-color:var(--muted); }
   .buy { color:var(--green); } .sell { color:var(--red); }
-  #plot { width:100%; height: calc(100vh - 58px); }
-  .legend { display:flex; gap:12px; flex-wrap:wrap; padding:6px 14px; color:var(--muted); font-size:11px; border-bottom:1px solid var(--line); }
+  #plotwrap { position:relative; width:100%; height: calc(100vh - 58px); overflow:hidden; }
+  #plot { display:block; cursor:crosshair; }
+  #tip { position:absolute; z-index:2; pointer-events:none; background:#1a2230f2; border:1px solid var(--line); border-radius:6px; padding:6px 9px; font:11px/1.45 var(--mono); color:var(--text); max-width:520px; white-space:nowrap; }
+  #tip[hidden] { display:none; }
+  .legend button.lg { display:inline-flex; align-items:center; gap:5px; padding:2px 7px; font-size:11px; border-radius:999px; }
+  .legend button.lg.off { opacity:.35; text-decoration:line-through; }
+  .legend .help { margin-left:auto; }
+  .legend { display:flex; gap:6px; align-items:center; flex-wrap:wrap; padding:6px 14px; color:var(--muted); font-size:11px; border-bottom:1px solid var(--line); }
   .legend span b { font-weight:600; color:var(--text); }
   #status { padding:8px 14px; color:var(--muted); font-size:12px; }
   #status.err { color:var(--red); }
@@ -51,23 +57,15 @@
   <button id="latest" title="the newest order of this key">latest</button>
   <button id="reload">reload</button>
   <span id="status"></span>
+  <span id="cursor" class="mono meta"></span>
 </div>
-<div class="legend">
-  <span><b>lines</b> Binance bid/ask (thin), Hyperliquid bid/ask (thick)</span>
-  <span><b>colour</b> buy green, sell red</span>
-  <span><b>&#9654;</b> insert, filled &nbsp; <b>&#9655;</b> insert, not filled</span>
-  <span><b>&#9679;</b> fill</span>
-  <span><b>&#10006;</b> cancelled &nbsp; <b>&#8855;</b> rejected</span>
-  <span><b>drag</b> selects an area to zoom, <b>two fingers</b> pan, <b>pinch</b> (or ctrl + wheel) zooms, <b>double-click</b> zooms out to the window</span>
-  <span>lower pane: Binance mid over Hyperliquid mid, bps; dashed = the open threshold of the last decision</span>
-</div>
+<div class="legend" id="legend"></div>
 <div class="body">
   <div class="side">
     <table id="orders"><thead><tr><th>sent (UTC)</th><th>side</th><th>exec</th><th>reason</th><th>px</th><th>sz</th><th>status</th><th>filled</th></tr></thead><tbody></tbody></table>
   </div>
-  <div id="plot"></div>
+  <div id="plotwrap"><canvas id="plot"></canvas><div id="tip" hidden></div></div>
 </div>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
 <script src="/app.js"></script>
 </body>
 </html>
