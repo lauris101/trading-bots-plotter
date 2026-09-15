@@ -21,6 +21,19 @@
     const t = Date.parse(s.trim().replace(" ", "T") + (s.includes("Z") ? "" : "Z"));
     return Number.isNaN(t) ? null : t;
   };
+  // The window the server will serve at most ("a window is at most 6
+  // hours", src/main.rs): clamped here so a wide range reports rather than
+  // coming back as a 400.
+  const MAX_WINDOW_MS = 6 * 3600 * 1000;
+  /** An explicit from/to, when both parse and read forwards. Null means the
+   *  centre and the window picker decide, as they always have. */
+  const customRange = () => {
+    const a = parseCentre($("from").value), b = parseCentre($("to").value);
+    if (a == null || b == null || b <= a) return null;
+    return { from: a, to: Math.min(b, a + MAX_WINDOW_MS), clamped: b - a > MAX_WINDOW_MS };
+  };
+  /** Back to centre + window. */
+  const clearRange = () => { $("from").value = ""; $("to").value = ""; };
   const status = (msg, err = false) => { const el = $("status"); el.textContent = msg; el.className = err ? "err" : ""; };
   // A cloid is 34 characters and only its ends identify it; the full one is
   // on hover and one click away, which is what an investigation needs.
@@ -110,6 +123,9 @@
   }
 
   function setCentre(ms) {
+    // Centring on something is the other way of choosing a window; an
+    // explicit range would just override it silently.
+    clearRange();
     state.centreMs = ms;
     $("centre").value = fmt(ms);
     for (const tr of $("orders").querySelectorAll("tr.o")) tr.classList.toggle("sel", tr.dataset.cloid === state.selected);
@@ -216,9 +232,14 @@
   async function load() {
     const bot = $("bot").value, inst = $("instrument").value, mode = $("mode").value;
     if (!bot || !inst || state.centreMs == null) return;
+    const range = customRange();
     const span = Number($("span").value);
-    const from = Math.floor(state.centreMs - span / 2), to = Math.ceil(state.centreMs + span / 2);
-    status("loading");
+    const from = range ? range.from : Math.floor(state.centreMs - span / 2);
+    const to = range ? range.to : Math.ceil(state.centreMs + span / 2);
+    // The rest of the page still thinks in a centre: keep it on the range's
+    // middle so the arrows, the order list and the plot agree.
+    if (range) state.centreMs = Math.round((from + to) / 2);
+    status(range?.clamped ? "loading (range clamped to 6 h)" : "loading");
     let w;
     try {
       w = await api(`/api/window?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}&mode=${mode}&from_ms=${from}&to_ms=${to}`);
@@ -694,8 +715,30 @@
   };
   $("span").onchange = () => void load();
   $("centre").onchange = () => { const t = parseCentre($("centre").value); if (t != null) { state.selected = null; setCentre(t); } };
-  $("prev").onclick = () => setCentre(state.centreMs - Number($("span").value) / 2);
-  $("next").onclick = () => setCentre(state.centreMs + Number($("span").value) / 2);
+  // An explicit range shifts by half ITS length and stays explicit; the
+  // centre + window pair keeps its old behaviour.
+  const shift = (dir) => {
+    const range = customRange();
+    if (!range) {
+      setCentre(state.centreMs + (dir * Number($("span").value)) / 2);
+      return;
+    }
+    const by = dir * ((range.to - range.from) / 2);
+    $("from").value = fmt(range.from + by);
+    $("to").value = fmt(range.to + by);
+    void load();
+  };
+  $("prev").onclick = () => shift(-1);
+  $("next").onclick = () => shift(1);
+  for (const id of ["from", "to"]) {
+    $(id).onchange = () => {
+      const a = parseCentre($("from").value), b = parseCentre($("to").value);
+      const both = $("from").value.trim() && $("to").value.trim();
+      if (both && (a == null || b == null)) { status("range: use YYYY-MM-DD HH:MM:SS.mmm", true); return; }
+      if (both && b <= a) { status("range: `to` must be after `from`", true); return; }
+      void load();
+    };
+  }
   $("latest").onclick = jumpLatest;
   $("reload").onclick = async () => { await loadKeys(); await loadOrders(); void load(); };
   function jumpLatest() {

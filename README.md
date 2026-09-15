@@ -75,6 +75,12 @@ Open http://127.0.0.1:8095. Live orders are shown by default (the mode
 selector also offers dummy, or both). The bot and instrument with the newest
 live orders are preselected, centred on the newest order; click any order in
 the list to centre on it; `←` / `→` shift the window by half its length.
+Hovering an order in the list rings every point it left on the plot.
+
+For an exact window, fill in `from` and `to` (UTC, `YYYY-MM-DD HH:MM:SS.mmm`);
+they override the centre and the window picker, and `←` / `→` then step by
+half the range. Six hours is the server's limit and a wider range is clamped
+to it. Clear either field, or click an order, to go back to centre + window.
 
 ## Layout
 
