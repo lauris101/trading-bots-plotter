@@ -109,6 +109,7 @@
     "sent:unfilled": ["tri", 9, false, "insert, not filled"],
     "acked:rejected": ["circle-x", 9, false, "REJECTED"],
     "acked:unknown": ["diamond", 8, false, "acked: unknown"],
+    "amend": ["arrow", 9, true, "amended to here"],
     "fill": ["circle", 5, true, "fill"],
     "cancel_sent": ["x", 6, false, "cancel sent"],
     "cancelled:ok": ["x", 6, true, "cancelled"],
@@ -123,7 +124,7 @@
   };
   const priceOf = (e) => {
     const n = (v) => (v == null || v === "" ? null : Number(v));
-    if (e.kind === "fill") return n(e.px);
+    if (e.kind === "fill" || e.kind === "amend") return n(e.px);
     if (e.kind === "acked" && e.status === "filled") return n(e.px) ?? n(e.order_avg_px) ?? n(e.order_px);
     return n(e.order_px) ?? n(e.px);
   };
@@ -133,6 +134,7 @@
       `${esc(e.side)} ${esc(e.exec)}${e.reduce_only ? " reduce-only" : ""}  reason ${esc(e.reason)}${e.priority ? `  p${e.priority}` : ""}`,
       `order px ${esc(e.order_px)}  sz ${esc(e.order_sz)}  ->  ${esc(e.order_status)}${Number(e.order_filled) ? ` ${esc(e.order_filled)} @ ${esc(e.order_avg_px)}` : ""}`,
     ];
+    if (e.kind === "amend") lines.push(`re-priced to ${esc(e.px)}  sz ${esc(e.sz)}`);
     if (e.kind === "fill") lines.push(`fill px ${esc(e.px)} sz ${esc(e.sz)}${e.fee ? ` fee ${esc(e.fee)}` : ""}${e.closed_pnl ? ` pnl ${esc(e.closed_pnl)}` : ""} (${esc(e.source)})`);
     if (e.kind === "acked" && e.status === "filled") lines.push(`filled ${esc(e.sz)} @ ${esc(e.px)}`);
     if (e.error) lines.push(`<span style="color:#f85149">${esc(e.error)}</span>`);
@@ -317,10 +319,16 @@
       case "x": c.moveTo(x - s, y - s); c.lineTo(x + s, y + s); c.moveTo(x + s, y - s); c.lineTo(x - s, y + s); break;
       case "circle-x": c.arc(x, y, s, 0, Math.PI * 2); c.moveTo(x - s * 0.6, y - s * 0.6); c.lineTo(x + s * 0.6, y + s * 0.6); c.moveTo(x + s * 0.6, y - s * 0.6); c.lineTo(x - s * 0.6, y + s * 0.6); break;
       case "diamond": c.moveTo(x, y - s); c.lineTo(x + s, y); c.lineTo(x, y + s); c.lineTo(x - s, y); c.closePath(); break;
+      case "arrow":
+        // A short horizontal bar with a tick: the price this rung moved to.
+        c.moveTo(x - s, y); c.lineTo(x + s, y);
+        c.moveTo(x + s * 0.4, y - s * 0.5); c.lineTo(x + s, y); c.lineTo(x + s * 0.4, y + s * 0.5);
+        break;
       case "hexagon": for (let k = 0; k < 6; k++) { const a = Math.PI / 6 + (k * Math.PI) / 3; const px = x + s * Math.cos(a), py = y + s * Math.sin(a); if (k) c.lineTo(px, py); else c.moveTo(px, py); } c.closePath(); break;
       default: c.arc(x, y, s, 0, Math.PI * 2);
     }
     if (solid && sym !== "x" && sym !== "circle-x") c.fill();
+    if (sym === "arrow") { c.stroke(); return; }
     if (sym === "circle-x" && solid) { c.stroke(); c.beginPath(); c.arc(x, y, s, 0, Math.PI * 2); c.globalAlpha = 0.35; c.fill(); c.globalAlpha = 1; return; }
     c.stroke();
   }
