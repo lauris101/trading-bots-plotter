@@ -11,7 +11,8 @@
     win: null,          // the built window: lines, marks, deviation, full range
     view: null,         // {x0, x1, y0, y1} in ms and price
     hidden: new Set(),  // series ids toggled off in the legend
-    drag: null, hoverPt: null, raf: 0,
+    drag: null, hoverPt: null, pinned: null, raf: 0,
+    firstFill: true,
   };
 
   const fmt = (ms) => new Date(ms).toISOString().replace("T", " ").replace("Z", "");
@@ -47,10 +48,20 @@
       const cur = seen.get(k.instrument);
       if (!cur || k.last_at > cur.last_at) seen.set(k.instrument, k);
     }
-    const list = [...seen.values()].sort((a, b) => (a.last_at < b.last_at ? 1 : -1));
+    const all = [...seen.values()];
+    // Alphabetical and filtered by the search box; the page still OPENS on
+    // the key with the newest orders.
+    const newest = all.reduce((a, b) => (a && a.last_at > b.last_at ? a : b), null);
+    const q = $("search").value.trim().toUpperCase();
+    const list = all
+      .filter((k) => !q || k.instrument.toUpperCase().includes(q))
+      .sort((a, b) => a.instrument.localeCompare(b.instrument));
     const prev = $("instrument").value;
     $("instrument").innerHTML = list.map((k) => `<option value="${esc(k.instrument)}">${esc(k.instrument)} (${k.orders})</option>`).join("");
     if (list.some((k) => k.instrument === prev)) $("instrument").value = prev;
+    else if (state.firstFill && newest && list.some((k) => k.instrument === newest.instrument)) $("instrument").value = newest.instrument;
+    state.firstFill = false;
+    $("instcount").textContent = q ? `${list.length} of ${all.length}` : `${all.length} instruments`;
   }
 
   // ---- orders of the key ----
@@ -159,6 +170,9 @@
     }
     state.win = build(w, from, to, inst);
     state.view = { ...state.win.full };
+    state.pinned = null;
+    tip.hidden = true;
+    tip.classList.remove("pinned");
     renderLegend();
     const nq = state.win.lines.reduce((a, l) => a + (l.id.endsWith(":bid") ? l.t.length : 0), 0);
     status(`${nq} quotes, ${w.events.length} events, ${fmt(from).slice(11, 19)} to ${fmt(to).slice(11, 19)} UTC${w.quotes.bucketed_ms ? `, bucketed to ${w.quotes.bucketed_ms} ms` : ""}`);
@@ -364,9 +378,11 @@
         drawSymbol(ctx, m.symbol, xPx(P, p.t, v), yPx(P.price, p.y, v.y0, v.y1), m.size, m.color, m.solid);
       }
     }
-    if (state.hoverPt) {
-      const p = state.hoverPt;
-      ctx.strokeStyle = "#dde4ec"; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(xPx(P, p.t, v), yPx(P.price, p.y, v.y0, v.y1), p.size + 5, 0, Math.PI * 2); ctx.stroke();
+    const marked = state.pinned ?? state.hoverPt;
+    if (marked) {
+      ctx.strokeStyle = state.pinned ? "#58a6ff" : "#dde4ec";
+      ctx.lineWidth = state.pinned ? 2 : 1.2;
+      ctx.beginPath(); ctx.arc(xPx(P, marked.t, v), yPx(P.price, marked.y, v.y0, v.y1), marked.size + 5, 0, Math.PI * 2); ctx.stroke();
     }
     ctx.restore();
     ctx.save(); ctx.translate(14, P.price.top + P.price.h / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillStyle = "#8b98a9"; ctx.fillText(w.inst, 0, 0); ctx.restore();
@@ -423,6 +439,34 @@
   const pos = (ev) => { const r = cv.getBoundingClientRect(); return { x: ev.clientX - r.left, y: ev.clientY - r.top }; };
   const inPrice = (P, y) => y >= P.price.top && y <= P.price.top + P.price.h;
 
+  /** The marker within a dozen pixels of `p`, or null. */
+  function nearestMark(p) {
+    if (!state.win || !state.view) return null;
+    const P = panes(), v = state.view;
+    if (!inPrice(P, p.y)) return null;
+    let best = null, bd = 12 * 12;
+    for (const m of state.win.marks) {
+      if (state.hidden.has(m.id)) continue;
+      for (const pt of m.pts) {
+        if (pt.t < v.x0 || pt.t > v.x1) continue;
+        const dx = xPx(P, pt.t, v) - p.x, dy = yPx(P.price, pt.y, v.y0, v.y1) - p.y, dd = dx * dx + dy * dy;
+        if (dd < bd) { bd = dd; best = { ...pt, size: m.size }; }
+      }
+    }
+    return best;
+  }
+
+  /** Put the panel next to `p`. Pinned: it stays until the next click, takes
+   *  the pointer (so its text can be selected) and says how to close. */
+  function showTip(pt, p, pinned) {
+    tip.innerHTML = pt.text + (pinned ? `<div class="tip-hint">click anywhere on the plot to close</div>` : "");
+    tip.hidden = false;
+    tip.classList.toggle("pinned", !!pinned);
+    const tx = Math.min(p.x + 14, W - tip.offsetWidth - 8), ty = Math.min(p.y + 14, H - tip.offsetHeight - 8);
+    tip.style.left = `${Math.max(0, tx)}px`;
+    tip.style.top = `${Math.max(0, ty)}px`;
+  }
+
   cv.addEventListener("mousedown", (ev) => {
     if (ev.button !== 0 || !state.view) return;
     const p = pos(ev);
@@ -438,26 +482,14 @@
       requestDraw();
       return;
     }
-    if (ev.target !== cv) { if (state.hoverPt) { state.hoverPt = null; tip.hidden = true; requestDraw(); } return; }
-    // nearest marker within 10 px in the price pane
     const P = panes(), v = state.view;
-    let best = null, bd = 10 * 10;
-    if (inPrice(P, p.y)) {
-      for (const m of state.win.marks) {
-        if (state.hidden.has(m.id)) continue;
-        for (const pt of m.pts) {
-          if (pt.t < v.x0 || pt.t > v.x1) continue;
-          const dx = xPx(P, pt.t, v) - p.x, dy = yPx(P.price, pt.y, v.y0, v.y1) - p.y, dd = dx * dx + dy * dy;
-          if (dd < bd) { bd = dd; best = { ...pt, size: m.size }; }
-        }
-      }
+    if (ev.target !== cv) { if (state.hoverPt) { state.hoverPt = null; if (!state.pinned) tip.hidden = true; requestDraw(); } return; }
+    // A pinned panel is the one being read: hovering does not replace it.
+    if (!state.pinned) {
+      const best = nearestMark(p);
+      if (best) showTip(best, p, false); else tip.hidden = true;
+      if ((best?.t !== state.hoverPt?.t) || (best?.y !== state.hoverPt?.y)) { state.hoverPt = best; requestDraw(); }
     }
-    if (best) {
-      tip.innerHTML = best.text; tip.hidden = false;
-      const tx = Math.min(p.x + 14, W - tip.offsetWidth - 8), ty = Math.min(p.y + 14, H - tip.offsetHeight - 8);
-      tip.style.left = `${Math.max(0, tx)}px`; tip.style.top = `${Math.max(0, ty)}px`;
-    } else tip.hidden = true;
-    if ((best?.t !== state.hoverPt?.t) || (best?.y !== state.hoverPt?.y)) { state.hoverPt = best; requestDraw(); }
     if (p.x >= P.left && p.x <= P.left + P.w) {
       const t = pxX(P, p.x, v);
       $("cursor").textContent = inPrice(P, p.y) ? `${fmtMs(t)}  ${pxY(P.price, p.y, v.y0, v.y1).toPrecision(6)}` : fmtMs(t);
@@ -467,7 +499,16 @@
     const dg = state.drag;
     if (!dg) return;
     state.drag = null;
-    if (!dg.moved) { requestDraw(); return; }
+    if (!dg.moved) {
+      // A click pins the marker under it, or closes whatever is pinned.
+      const p = pos(ev);
+      const hit = nearestMark(p);
+      state.pinned = hit;
+      if (hit) showTip(hit, p, true);
+      else { tip.hidden = true; tip.classList.remove("pinned"); }
+      requestDraw();
+      return;
+    }
     const P = panes(), v = state.view;
     const xa = Math.min(dg.x0, dg.x), xb = Math.max(dg.x0, dg.x);
     const nv = { ...v, x0: pxX(P, xa, v), x1: pxX(P, xb, v) };
@@ -507,12 +548,42 @@
     }
     requestDraw();
   }, { passive: false });
-  cv.addEventListener("mouseleave", () => { tip.hidden = true; if (state.hoverPt) { state.hoverPt = null; requestDraw(); } });
+  cv.addEventListener("mouseleave", () => {
+    if (!state.pinned) tip.hidden = true;
+    if (state.hoverPt) { state.hoverPt = null; requestDraw(); }
+  });
+
+  // ---- the splitter between the order list and the plot ----
+  (() => {
+    const split = $("split"), body = document.querySelector(".body");
+    const KEY = "plotter:side-w";
+    try {
+      const saved = localStorage.getItem(KEY);
+      if (saved) body.style.setProperty("--side-w", `${saved}px`);
+    } catch { /* private mode */ }
+    let dragging = false;
+    split.addEventListener("mousedown", (ev) => { dragging = true; split.classList.add("on"); ev.preventDefault(); });
+    window.addEventListener("mousemove", (ev) => {
+      if (!dragging) return;
+      const w = Math.round(Math.max(220, Math.min(ev.clientX - body.getBoundingClientRect().left, window.innerWidth - 320)));
+      body.style.setProperty("--side-w", `${w}px`);
+    });
+    window.addEventListener("mouseup", () => {
+      if (!dragging) return;
+      dragging = false; split.classList.remove("on");
+      try { localStorage.setItem(KEY, String(parseInt(body.style.getPropertyValue("--side-w"), 10) || 420)); } catch { /* private mode */ }
+    });
+  })();
 
   // ---- wiring ----
   $("bot").onchange = async () => { fillInstruments(); await loadOrders(); jumpLatest(); };
   $("instrument").onchange = async () => { await loadOrders(); jumpLatest(); };
   $("mode").onchange = async () => { fillInstruments(); await loadOrders(); jumpLatest(); };
+  $("search").oninput = async () => {
+    const before = $("instrument").value;
+    fillInstruments();
+    if ($("instrument").value !== before) { await loadOrders(); jumpLatest(); }
+  };
   $("span").onchange = () => void load();
   $("centre").onchange = () => { const t = parseCentre($("centre").value); if (t != null) { state.selected = null; setCentre(t); } };
   $("prev").onclick = () => setCentre(state.centreMs - Number($("span").value) / 2);

@@ -16,7 +16,9 @@
   button { cursor:pointer; } button:hover { border-color:var(--accent); color:var(--accent); }
   button.on { border-color:var(--accent); color:var(--accent); }
   .meta { color:var(--muted); font-size:12px; }
-  .body { flex:1; min-height:0; display:grid; grid-template-columns: 420px 1fr; }
+  .body { flex:1; min-height:0; display:grid; grid-template-columns: var(--side-w, 420px) 6px 1fr; }
+  #split { cursor: col-resize; background: var(--line); }
+  #split:hover, #split.on { background: var(--accent); }
   .side { border-right:1px solid var(--line); overflow:auto; min-height:0; }
   .side table { width:100%; border-collapse:collapse; font-size:12px; }
   .side th, .side td { padding:4px 6px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
@@ -33,6 +35,8 @@
   #plot { display:block; cursor:crosshair; }
   #tip { position:absolute; z-index:2; pointer-events:none; background:#1a2230f2; border:1px solid var(--line); border-radius:6px; padding:6px 9px; font:11px/1.45 var(--mono); color:var(--text); max-width:520px; white-space:nowrap; }
   #tip[hidden] { display:none; }
+  #tip.pinned { pointer-events:auto; border-color: var(--accent); box-shadow: 0 8px 28px rgba(0,0,0,.5); white-space:normal; max-width:560px; }
+  #tip .tip-hint { color: var(--muted); margin-top:6px; border-top:1px solid var(--line); padding-top:5px; }
   .legend button.lg { display:inline-flex; align-items:center; gap:5px; padding:2px 7px; font-size:11px; border-radius:999px; }
   .legend button.lg.off { opacity:.35; text-decoration:line-through; }
   .legend .help { margin-left:auto; }
@@ -47,6 +51,8 @@
   <h1>trading-bots plotter</h1>
   <label class="f">bot <select id="bot"></select></label>
   <label class="f">instrument <select id="instrument"></select></label>
+  <label class="f">filter <input id="search" class="mono" style="width:120px" placeholder="type to filter"></label>
+  <span id="instcount" class="meta"></span>
   <label class="f">mode <select id="mode"><option value="live" selected>live</option><option value="dummy">dummy</option><option value="">live + dummy</option></select></label>
   <label class="f">window <select id="span">
     <option value="20000">20 s</option><option value="60000" selected>1 min</option><option value="180000">3 min</option>
@@ -65,6 +71,7 @@
   <div class="side">
     <table id="orders"><thead><tr><th>sent (UTC)</th><th>side</th><th>exec</th><th>reason</th><th>px</th><th>sz</th><th>status</th><th>filled</th></tr></thead><tbody></tbody></table>
   </div>
+  <div id="split" title="drag to resize"></div>
   <div id="plotwrap"><canvas id="plot"></canvas><div id="tip" hidden></div></div>
 </div>
 <script src="/app.js"></script>
