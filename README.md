@@ -12,7 +12,8 @@ with both venues' quotes and every order event on top of them.
   points left; each is solid when the order filled at all and an outline when
   it did not. Fills are dots, cancels crosses, a rejection a circled cross,
   and an amend (a resting order re-priced in place) a bar at the price it
-  moved to. Nothing is dropped for want of a shape. An open's marker also
+  moved to - solid when the venue accepted the move, dashed at the price it
+  never reached when the venue refused it. Nothing is dropped for want of a shape. An open's marker also
   carries the decision the calculator recorded: deviation, raw deviation,
   basis, rho, delta, threshold, expected gain.
 - Lower pane: the leader's mid over the lagger's mid in basis points, with

@@ -119,7 +119,8 @@
     "cross:unfilled": ["tri-left", 9, false, "close IOC, no fill"],
     "acked:rejected": ["circle-x", 9, false, "REJECTED"],
     "acked:unknown": ["diamond", 8, false, "acked: unknown"],
-    "amend": ["arrow", 9, true, "amended to here"],
+    "amend:ok": ["arrow", 9, true, "amended to here"],
+    "amend:refused": ["arrow", 9, false, "amend REFUSED (it stayed put)"],
     "fill": ["circle", 5, true, "fill"],
     "cancel_sent": ["x", 6, false, "cancel sent"],
     "cancelled:ok": ["x", 6, true, "cancelled"],
@@ -135,6 +136,10 @@
     }
     // A resting or filled ack repeats what the insert and the fills already
     // show; a rejection or an unknown is the whole story of that order.
+    // An amend is a request: the answer that followed it on the same cloid
+    // says whether the order actually moved (see `pairAmends`). A refused
+    // one is drawn hollow at the price it did NOT reach.
+    if (e.kind === "amend") return e.amend_ok === false ? "amend:refused" : "amend:ok";
     if (e.kind === "acked") return e.status === "rejected" || e.status === "unknown" ? `acked:${e.status}` : null;
     if (e.kind === "cancelled") return `cancelled:${e.status ?? "ok"}`;
     return KIND[e.kind] ? e.kind : "other";
@@ -154,7 +159,16 @@
       `${esc(e.side)} ${esc(e.exec)}${e.reduce_only ? " reduce-only" : ""}  reason ${esc(e.reason)}${e.priority ? `  p${e.priority}` : ""}`,
       `order px ${esc(e.order_px)}  sz ${esc(e.order_sz)}  ->  ${esc(e.order_status)}${Number(e.order_filled) ? ` ${esc(e.order_filled)} @ ${esc(e.order_avg_px)}` : ""}`,
     ];
-    if (e.kind === "amend") lines.push(`re-priced to ${esc(e.px)}  sz ${esc(e.sz)}`);
+    if (e.kind === "amend") {
+      lines.push(
+        e.amend_ok === false
+          ? `<span style="color:#f85149">REFUSED: it did not move to ${esc(e.px)}</span>`
+          : e.amend_ok
+            ? `moved to ${esc(e.px)}  sz ${esc(e.sz)}`
+            : `re-price to ${esc(e.px)} requested (no answer yet in this window)`,
+      );
+      if (e.amend_error) lines.push(`<span style="color:#f85149">${esc(e.amend_error)}</span>`);
+    }
     if (e.kind === "fill") lines.push(`fill px ${esc(e.px)} sz ${esc(e.sz)}${e.fee ? ` fee ${esc(e.fee)}` : ""}${e.closed_pnl ? ` pnl ${esc(e.closed_pnl)}` : ""} (${esc(e.source)})`);
     if (e.kind === "acked" && e.status === "filled") lines.push(`filled ${esc(e.sz)} @ ${esc(e.px)}`);
     if (e.error) lines.push(`<span style="color:#f85149">${esc(e.error)}</span>`);
@@ -201,6 +215,29 @@
     requestDraw();
   }
 
+  /** Mark every amend with the answer that came back for it: the next ack
+   *  on the same cloid. `resting` means the order moved; a rejection or an
+   *  unknown means it stayed where it was. */
+  function pairAmends(events) {
+    const waiting = new Map(); // cloid -> the amends still unanswered
+    for (const e of events) {
+      if (e.kind === "amend") {
+        e.amend_ok = null;
+        e.amend_error = null;
+        const q = waiting.get(e.cloid) ?? [];
+        q.push(e);
+        waiting.set(e.cloid, q);
+        continue;
+      }
+      if (e.kind !== "acked") continue;
+      const q = waiting.get(e.cloid);
+      if (!q || q.length === 0) continue;
+      const amend = q.shift();
+      amend.amend_ok = e.status === "resting" || e.status === "filled";
+      if (!amend.amend_ok) amend.amend_error = e.error ?? e.status ?? "refused";
+    }
+  }
+
   function build(w, from, to, inst) {
     const venues = Object.keys(w.quotes.by_venue).sort();
     const lines = [];
@@ -213,6 +250,7 @@
       lines.push({ id: `${v}:bid`, name: `${st.label} bid`, color: st.color, width: st.width, dash: null, t, v: bid });
       lines.push({ id: `${v}:ask`, name: `${st.label} ask`, color: st.color, width: st.width, dash: [4, 3], t, v: ask });
     }
+    pairAmends(w.events);
     const groups = {};
     for (const e of w.events) {
       const k = keyOf(e);
@@ -350,7 +388,13 @@
       default: c.arc(x, y, s, 0, Math.PI * 2);
     }
     if (solid && sym !== "x" && sym !== "circle-x") c.fill();
-    if (sym === "arrow") { c.stroke(); return; }
+    if (sym === "arrow") {
+      // Dashed when the venue refused the move: the order never got here.
+      if (!solid) c.setLineDash([3, 3]);
+      c.stroke();
+      c.setLineDash([]);
+      return;
+    }
     if (sym === "circle-x" && solid) { c.stroke(); c.beginPath(); c.arc(x, y, s, 0, Math.PI * 2); c.globalAlpha = 0.35; c.fill(); c.globalAlpha = 1; return; }
     c.stroke();
   }
