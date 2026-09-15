@@ -11,7 +11,7 @@
     win: null,          // the built window: lines, marks, deviation, full range
     view: null,         // {x0, x1, y0, y1} in ms and price
     hidden: new Set(),  // series ids toggled off in the legend
-    drag: null, hoverPt: null, pinned: null, raf: 0,
+    drag: null, hoverPt: null, pinned: null, hoverCloid: null, raf: 0,
     firstFill: true,
   };
 
@@ -88,6 +88,11 @@
       </tr>`).join("");
     for (const tr of tb.querySelectorAll("tr.o")) {
       tr.onclick = () => { state.selected = tr.dataset.cloid; setCentre(Number(tr.dataset.t)); };
+      // Hovering the row rings every point the order left on the plot: the
+      // insert, its fills, an amend, the cancel. One order is usually
+      // several marks scattered across the window.
+      tr.onmouseenter = () => { state.hoverCloid = tr.dataset.cloid; requestDraw(); };
+      tr.onmouseleave = () => { if (state.hoverCloid === tr.dataset.cloid) { state.hoverCloid = null; requestDraw(); } };
       const cell = tr.querySelector("td.cloid");
       if (cell) {
         cell.onclick = (ev) => {
@@ -277,7 +282,7 @@
       const id = `${e.side ?? "none"}|${k}`;
       const [symbol, size, solid, label] = KIND[k];
       (groups[id] ??= { id, name: `${e.side ?? ""} ${label}`.trim(), color: sideColor(e), symbol, size, solid, pts: [] })
-        .pts.push({ t: e.t, y: px, text: hover(e) });
+        .pts.push({ t: e.t, y: px, text: hover(e), cloid: e.cloid });
       if (px < lo) lo = px; if (px > hi) hi = px;
     }
     const marks = Object.values(groups);
@@ -462,11 +467,23 @@
       ctx.stroke();
     }
     ctx.setLineDash([]);
+    const ringed = [];
     for (const m of w.marks) {
       if (state.hidden.has(m.id)) continue;
       for (const p of m.pts) {
         if (p.t < v.x0 || p.t > v.x1) continue;
         drawSymbol(ctx, m.symbol, xPx(P, p.t, v), yPx(P.price, p.y, v.y0, v.y1), m.size, m.color, m.solid);
+        if (state.hoverCloid && p.cloid === state.hoverCloid) ringed.push({ p, size: m.size });
+      }
+    }
+    // After the symbols, so a ring is never drawn over.
+    if (ringed.length) {
+      ctx.strokeStyle = "#d29922";
+      ctx.lineWidth = 1.5;
+      for (const { p, size } of ringed) {
+        ctx.beginPath();
+        ctx.arc(xPx(P, p.t, v), yPx(P.price, p.y, v.y0, v.y1), size + 4, 0, Math.PI * 2);
+        ctx.stroke();
       }
     }
     const marked = state.pinned ?? state.hoverPt;
