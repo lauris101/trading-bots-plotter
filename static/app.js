@@ -22,6 +22,9 @@
     return Number.isNaN(t) ? null : t;
   };
   const status = (msg, err = false) => { const el = $("status"); el.textContent = msg; el.className = err ? "err" : ""; };
+  // A cloid is 34 characters and only its ends identify it; the full one is
+  // on hover and one click away, which is what an investigation needs.
+  const shortCloid = (c) => (String(c ?? "").length > 14 ? `${c.slice(0, 8)}..${c.slice(-6)}` : String(c ?? ""));
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
   async function api(path) {
@@ -74,6 +77,7 @@
     tb.innerHTML = orders.map((o) => `
       <tr class="o${state.selected === o.cloid ? " sel" : ""}" data-cloid="${esc(o.cloid)}" data-t="${Date.parse(o.sent_at)}">
         <td class="mono">${fmt(Date.parse(o.sent_at)).slice(5, 23)}</td>
+        <td class="mono cloid" title="${esc(o.cloid)} (click to copy)">${esc(shortCloid(o.cloid))}</td>
         <td class="${esc(o.side)}">${esc(o.side)}</td>
         <td>${esc(o.exec)}${o.reduce_only ? " ro" : ""}${o.priority ? ` p${o.priority}` : ""}</td>
         <td>${esc(o.reason)}</td>
@@ -84,6 +88,19 @@
       </tr>`).join("");
     for (const tr of tb.querySelectorAll("tr.o")) {
       tr.onclick = () => { state.selected = tr.dataset.cloid; setCentre(Number(tr.dataset.t)); };
+      const cell = tr.querySelector("td.cloid");
+      if (cell) {
+        cell.onclick = (ev) => {
+          // Copying is what this cell is for; centring the plot is what the
+          // rest of the row is for.
+          ev.stopPropagation();
+          const full = tr.dataset.cloid;
+          navigator.clipboard?.writeText(full).then(
+            () => { cell.textContent = "copied"; setTimeout(() => { cell.textContent = shortCloid(full); }, 800); },
+            () => {},
+          );
+        };
+      }
     }
   }
 

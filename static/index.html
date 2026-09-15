@@ -25,6 +25,8 @@
   .side th { position:sticky; top:0; background:var(--panel); color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
   .side tr.o { cursor:pointer; } .side tr.o:hover td { background:var(--panel2); } .side tr.sel td { background:#1f2a3a; }
   .mono { font-family:var(--mono); font-size:11px; }
+  td.cloid { cursor:pointer; color:var(--muted); }
+  td.cloid:hover { color:var(--accent); }
   .b { font-family:var(--mono); font-size:10px; padding:2px 6px; border-radius:999px; border:1px solid; text-transform:uppercase; }
   .b-filled, .b-ok { color:var(--green); border-color:var(--green); }
   .b-rejected, .b-failed, .b-error { color:var(--red); border-color:var(--red); }
@@ -69,7 +71,7 @@
 <div class="legend" id="legend"></div>
 <div class="body">
   <div class="side">
-    <table id="orders"><thead><tr><th>sent (UTC)</th><th>side</th><th>exec</th><th>reason</th><th>px</th><th>sz</th><th>status</th><th>filled</th></tr></thead><tbody></tbody></table>
+    <table id="orders"><thead><tr><th>sent (UTC)</th><th>cloid</th><th>side</th><th>exec</th><th>reason</th><th>px</th><th>sz</th><th>status</th><th>filled</th></tr></thead><tbody></tbody></table>
   </div>
   <div id="split" title="drag to resize"></div>
   <div id="plotwrap"><canvas id="plot"></canvas><div id="tip" hidden></div></div>
