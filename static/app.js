@@ -138,7 +138,7 @@
     if (e.kind === "fill") lines.push(`fill px ${esc(e.px)} sz ${esc(e.sz)}${e.fee ? ` fee ${esc(e.fee)}` : ""}${e.closed_pnl ? ` pnl ${esc(e.closed_pnl)}` : ""} (${esc(e.source)})`);
     if (e.kind === "acked" && e.status === "filled") lines.push(`filled ${esc(e.sz)} @ ${esc(e.px)}`);
     if (e.error) lines.push(`<span style="color:#f85149">${esc(e.error)}</span>`);
-    if (e.batch != null) lines.push(`batch ${e.batch}  ${esc(e.mode)}  ${esc(String(e.cloid).slice(0, 10))}..`);
+    lines.push(`cloid ${esc(e.cloid)}${e.batch != null ? `  batch ${e.batch}` : ""}${e.mode ? `  ${esc(e.mode)}` : ""}${e.oid ? `  oid ${esc(e.oid)}` : ""}`);
     const d = e.decision;
     if (d) {
       const f = (v, p = 1) => (typeof v === "number" ? v.toFixed(p) : "-");
