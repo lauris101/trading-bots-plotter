@@ -104,9 +104,19 @@
   const sideColor = (e) => (e.side === "buy" ? GREEN : e.side === "sell" ? RED : OTHER);
   const filled = (e) => e.order_status === "filled" || Number(e.order_filled) > 0;
   // kind key -> [symbol, size px, solid, label]
+  // Every decision the bot took is on the plot, and what KIND of order it
+  // was is the shape: an opening IOC is a triangle pointing right, a
+  // closing ALO rung a square, a closing IOC (the escalation) a triangle
+  // pointing left. Solid when the order filled at all, outline when it did
+  // not - so a refused ALO rung is an outline square with the REJECTED
+  // cross on it, and is never confused with the open that preceded it.
   const KIND = {
-    "sent:filled": ["tri", 9, true, "insert, filled"],
-    "sent:unfilled": ["tri", 9, false, "insert, not filled"],
+    "open:filled": ["tri", 9, true, "open IOC, filled"],
+    "open:unfilled": ["tri", 9, false, "open IOC, no fill"],
+    "rung:filled": ["square", 7, true, "close ALO, filled"],
+    "rung:unfilled": ["square", 7, false, "close ALO, no fill"],
+    "cross:filled": ["tri-left", 9, true, "close IOC, filled"],
+    "cross:unfilled": ["tri-left", 9, false, "close IOC, no fill"],
     "acked:rejected": ["circle-x", 9, false, "REJECTED"],
     "acked:unknown": ["diamond", 8, false, "acked: unknown"],
     "amend": ["arrow", 9, true, "amended to here"],
@@ -115,18 +125,28 @@
     "cancelled:ok": ["x", 6, true, "cancelled"],
     "cancelled:failed": ["circle-x", 9, true, "cancel FAILED"],
     "left_resting": ["hexagon", 8, false, "left resting"],
+    // Nothing is dropped for want of a shape.
+    "other": ["diamond", 7, false, "event"],
   };
   const keyOf = (e) => {
-    if (e.kind === "sent") return filled(e) ? "sent:filled" : "sent:unfilled";
+    if (e.kind === "sent") {
+      const what = !e.reduce_only ? "open" : e.exec === "alo" ? "rung" : "cross";
+      return `${what}:${filled(e) ? "filled" : "unfilled"}`;
+    }
+    // A resting or filled ack repeats what the insert and the fills already
+    // show; a rejection or an unknown is the whole story of that order.
     if (e.kind === "acked") return e.status === "rejected" || e.status === "unknown" ? `acked:${e.status}` : null;
     if (e.kind === "cancelled") return `cancelled:${e.status ?? "ok"}`;
-    return KIND[e.kind] ? e.kind : null;
+    return KIND[e.kind] ? e.kind : "other";
   };
   const priceOf = (e) => {
     const n = (v) => (v == null || v === "" ? null : Number(v));
-    if (e.kind === "fill" || e.kind === "amend") return n(e.px);
     if (e.kind === "acked" && e.status === "filled") return n(e.px) ?? n(e.order_avg_px) ?? n(e.order_px);
-    return n(e.order_px) ?? n(e.px);
+    // Every event plots where IT happened: an insert at the price it was
+    // sent at, an amend at the price it moved to, a fill at the fill. The
+    // order's own price is only the fallback - an amend rewrites it, and an
+    // insert marker must not slide to a price it never had.
+    return n(e.px) ?? n(e.order_px);
   };
   const hover = (e) => {
     const lines = [
@@ -315,6 +335,8 @@
     c.beginPath();
     switch (sym) {
       case "tri": c.moveTo(x - s * 0.7, y - s * 0.8); c.lineTo(x + s * 0.9, y); c.lineTo(x - s * 0.7, y + s * 0.8); c.closePath(); break;
+      case "tri-left": c.moveTo(x + s * 0.7, y - s * 0.8); c.lineTo(x - s * 0.9, y); c.lineTo(x + s * 0.7, y + s * 0.8); c.closePath(); break;
+      case "square": c.rect(x - s * 0.8, y - s * 0.8, s * 1.6, s * 1.6); break;
       case "circle": c.arc(x, y, s, 0, Math.PI * 2); break;
       case "x": c.moveTo(x - s, y - s); c.lineTo(x + s, y + s); c.moveTo(x + s, y - s); c.lineTo(x - s, y + s); break;
       case "circle-x": c.arc(x, y, s, 0, Math.PI * 2); c.moveTo(x - s * 0.6, y - s * 0.6); c.lineTo(x + s * 0.6, y + s * 0.6); c.moveTo(x + s * 0.6, y - s * 0.6); c.lineTo(x - s * 0.6, y + s * 0.6); break;

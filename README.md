@@ -7,10 +7,12 @@ with both venues' quotes and every order event on top of them.
 - Lines: Binance bid/ask (thin), Hyperliquid bid/ask (thick), as step lines;
   the ask is dashed. Every line toggles on its own in the legend.
 - Markers, one per order event, coloured by side (buy green, sell red), with
-  the whole record on hover. An insert is a right-pointing triangle, solid
-  when the order filled and outline only when it did not; fills are dots;
-  cancels are crosses; a rejection is a circled cross; an amend (a resting
-  order re-priced in place) is a bar at the price it moved to. An open's marker also
+  the whole record on hover, cloid included. The shape is the kind of order:
+  an opening IOC points right, a closing ALO rung is a square, a closing IOC
+  points left; each is solid when the order filled at all and an outline when
+  it did not. Fills are dots, cancels crosses, a rejection a circled cross,
+  and an amend (a resting order re-priced in place) a bar at the price it
+  moved to. Nothing is dropped for want of a shape. An open's marker also
   carries the decision the calculator recorded: deviation, raw deviation,
   basis, rho, delta, threshold, expected gain.
 - Lower pane: the leader's mid over the lagger's mid in basis points, with
