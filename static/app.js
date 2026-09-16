@@ -235,24 +235,30 @@
     // insert marker must not slide to a price it never had.
     return n(e.px) ?? n(e.order_px);
   };
+  // Price times size, as money: what a line of the tooltip is actually
+  // worth. Blank when either is missing rather than a misleading 0.
+  const usd = (px, sz) => {
+    const n = Number(px) * Number(sz);
+    return Number.isFinite(n) && px != null && sz != null && px !== "" && sz !== "" ? `  = $${n.toFixed(2)}` : "";
+  };
   const hover = (e) => {
     const lines = [
       `<b>${esc(KIND[keyOf(e)]?.[3] ?? `${e.kind}${e.status ? ": " + e.status : ""}`)}</b>  ${fmtMs(e.t)} UTC`,
       `${esc(e.side)} ${esc(e.exec)}${e.reduce_only ? " reduce-only" : ""}  reason ${esc(e.reason)}${e.priority ? `  p${e.priority}` : ""}`,
-      `order px ${esc(e.order_px)}  sz ${esc(e.order_sz)}  ->  ${esc(e.order_status)}${Number(e.order_filled) ? ` ${esc(e.order_filled)} @ ${esc(e.order_avg_px)}` : ""}`,
+      `order px ${esc(e.order_px)}  sz ${esc(e.order_sz)}${usd(e.order_px, e.order_sz)}  ->  ${esc(e.order_status)}${Number(e.order_filled) ? ` ${esc(e.order_filled)} @ ${esc(e.order_avg_px)}${usd(e.order_avg_px, e.order_filled)}` : ""}`,
     ];
     if (e.kind === "amend") {
       lines.push(
         e.amend_ok === false
           ? `<span style="color:#f85149">REFUSED: it did not move to ${esc(e.px)}</span>`
           : e.amend_ok
-            ? `moved to ${esc(e.px)}  sz ${esc(e.sz)}`
+            ? `moved to ${esc(e.px)}  sz ${esc(e.sz)}${usd(e.px, e.sz)}`
             : `re-price to ${esc(e.px)} requested (no answer yet in this window)`,
       );
       if (e.amend_error) lines.push(`<span style="color:#f85149">${esc(e.amend_error)}</span>`);
     }
-    if (e.kind === "fill") lines.push(`fill px ${esc(e.px)} sz ${esc(e.sz)}${e.fee ? ` fee ${esc(e.fee)}` : ""}${e.closed_pnl ? ` pnl ${esc(e.closed_pnl)}` : ""} (${esc(e.source)})`);
-    if (e.kind === "acked" && e.status === "filled") lines.push(`filled ${esc(e.sz)} @ ${esc(e.px)}`);
+    if (e.kind === "fill") lines.push(`fill px ${esc(e.px)} sz ${esc(e.sz)}${usd(e.px, e.sz)}${e.fee ? `  fee $${esc(e.fee)}` : ""}${e.closed_pnl ? `  pnl $${esc(e.closed_pnl)}` : ""} (${esc(e.source)})`);
+    if (e.kind === "acked" && e.status === "filled") lines.push(`filled ${esc(e.sz)} @ ${esc(e.px)}${usd(e.px, e.sz)}`);
     if (e.error) lines.push(`<span style="color:#f85149">${esc(e.error)}</span>`);
     lines.push(`cloid ${esc(e.cloid)}${e.batch != null ? `  batch ${e.batch}` : ""}${e.mode ? `  ${esc(e.mode)}` : ""}${e.oid ? `  oid ${esc(e.oid)}` : ""}`);
     const d = e.decision;
