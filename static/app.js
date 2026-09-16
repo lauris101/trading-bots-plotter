@@ -88,7 +88,7 @@
   const eventLabel = (e) => {
     // Named for what the order IS, as the legend already does: "rung" and
     // "cross" are the code's ladder vocabulary and mean nothing to a reader.
-    if (e.kind === "sent") return !e.reduce_only ? "open IOC" : e.exec === "alo" ? "close ALO" : "close IOC";
+    if (e.kind === "sent") return !e.reduce_only ? "open IOC" : e.tif === "ioc" ? "close IOC" : `close ${String(e.tif ?? "").toUpperCase()}`;
     if (e.kind === "acked") return e.status ?? "acked";
     if (e.kind === "cancelled") return `cancel ${e.status ?? "ok"}`;
     if (e.kind === "cancel_sent") return "cancel sent";
@@ -124,7 +124,7 @@
       const px = e.px ?? e.order_px;
       return `
       <tr class="o${state.selectedEvent === e.id ? " ev-sel" : ""}" data-cloid="${esc(e.cloid)}" data-id="${e.id}" data-t="${e.t}" data-px="${esc(px ?? "")}">
-        <td class="mono${venueClock(e) ? " venue" : ""}" title="${venueClock(e) ? "the venue's fill time" : "our clock"}">${fmtMs(e.t).slice(5)}</td>
+        <td class="mono${venueClock(e) ? " venue" : ""}" title="${venueClock(e) ? "the venue's fill time" : "our clock"}">${fmt(e.t).slice(5, 23)}</td>
         <td><span class="b b-${badgeClass(e)}" title="${esc(e.kind)}${e.status ? ": " + esc(e.status) : ""}">${esc(eventLabel(e))}</span></td>
         <td class="mono cloid" title="${esc(e.cloid)} (click to copy)">${esc(shortCloid(e.cloid))}</td>
         <td class="${esc(e.side)}">${esc(e.side)}${e.reduce_only ? " ro" : ""}</td>
@@ -212,7 +212,9 @@
   };
   const keyOf = (e) => {
     if (e.kind === "sent") {
-      const what = !e.reduce_only ? "open" : e.exec === "alo" ? "rung" : "cross";
+      // A resting close is a rung whatever it rests as (ALO or GTC); only
+      // an IOC close is the escalation's cross.
+      const what = !e.reduce_only ? "open" : e.tif === "ioc" ? "cross" : "rung";
       return `${what}:${filled(e) ? "filled" : "unfilled"}`;
     }
     // A resting or filled ack repeats what the insert and the fills already
@@ -246,7 +248,7 @@
   const hover = (e) => {
     const lines = [
       `<b>${esc(KIND[keyOf(e)]?.[3] ?? `${e.kind}${e.status ? ": " + e.status : ""}`)}</b>  ${fmtMs(e.t)} UTC`,
-      `${esc(e.side)} ${esc(e.exec)}${e.reduce_only ? " reduce-only" : ""}  reason ${esc(e.reason)}${e.priority ? `  p${e.priority}` : ""}`,
+      `${esc(e.side)} ${esc(String(e.tif ?? "").toUpperCase())}${e.reduce_only ? " reduce-only" : ""}  reason ${esc(e.reason)}${e.priority ? `  p${e.priority}` : ""}`,
       `order px ${esc(e.order_px)}  sz ${esc(e.order_sz)}${usd(e.order_px, e.order_sz)}  ->  ${esc(e.order_status)}${Number(e.order_filled) ? ` ${esc(e.order_filled)} @ ${esc(e.order_avg_px)}${usd(e.order_avg_px, e.order_filled)}` : ""}`,
     ];
     if (e.kind === "amend") {
@@ -590,10 +592,10 @@
     }
     // After the symbols, so a ring is never drawn over.
     if (ringed.length) {
-      ctx.strokeStyle = "#d29922";
-      ctx.lineWidth = 1.5;
       for (const { p, size, own } of ringed) {
-        // The hovered row's own event rings heavier than its siblings.
+        // The order's other events ring amber; the hovered row's own event
+        // rings in its own colour and heavier, so the eye finds it first.
+        ctx.strokeStyle = own ? "#ff7b72" : "#d29922";
         ctx.lineWidth = own ? 2.5 : 1.2;
         ctx.beginPath();
         ctx.arc(xPx(P, p.t, v), yPx(P.price, p.y, v.y0, v.y1), size + (own ? 6 : 4), 0, Math.PI * 2);

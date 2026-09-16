@@ -155,7 +155,7 @@ struct OrdersQuery {
 
 async fn orders(State(app): State<Arc<App>>, Query(q): Query<OrdersQuery>) -> ApiResult {
     let rows = sqlx::query(
-        "select cloid, mode, side, exec, reduce_only, reason, priority, px::text as px, sz::text as sz,
+        "select cloid, mode, side, tif, reduce_only, reason, priority, px::text as px, sz::text as sz,
                 status, error, filled_sz::text as filled_sz, avg_px::text as avg_px,
                 coalesce(sent_at, created_at) as sent_at, done_at, trace::text as trace
          from bot_orders
@@ -176,7 +176,7 @@ async fn orders(State(app): State<Arc<App>>, Query(q): Query<OrdersQuery>) -> Ap
                 "cloid": r.get::<String, _>("cloid"),
                 "mode": r.get::<String, _>("mode"),
                 "side": r.get::<Option<String>, _>("side"),
-                "exec": r.get::<Option<String>, _>("exec"),
+                "tif": r.get::<Option<String>, _>("tif"),
                 "reduce_only": r.get::<Option<bool>, _>("reduce_only"),
                 "reason": r.get::<Option<String>, _>("reason"),
                 "priority": r.get::<Option<i32>, _>("priority"),
@@ -208,7 +208,7 @@ async fn orders(State(app): State<Arc<App>>, Query(q): Query<OrdersQuery>) -> Ap
 async fn events(State(app): State<Arc<App>>, Query(q): Query<OrdersQuery>) -> ApiResult {
     let rows = sqlx::query(
         "select e.id, e.at, e.received_at, e.cloid, e.kind, e.status, e.batch, e.error,
-                coalesce(e.side, o.side) as side, coalesce(e.exec, o.exec) as exec,
+                coalesce(e.side, o.side) as side, coalesce(e.tif, o.tif) as tif,
                 coalesce(e.reduce_only, o.reduce_only) as reduce_only,
                 coalesce(e.reason, o.reason) as reason, coalesce(e.priority, o.priority) as priority,
                 e.px::text as px, e.sz::text as sz, o.px::text as order_px, o.sz::text as order_sz,
@@ -243,7 +243,7 @@ fn event_json(r: &sqlx::postgres::PgRow) -> Value {
         "batch": r.get::<Option<i64>, _>("batch"),
         "error": r.get::<Option<String>, _>("error"),
         "side": r.get::<Option<String>, _>("side"),
-        "exec": r.get::<Option<String>, _>("exec"),
+        "tif": r.get::<Option<String>, _>("tif"),
         "reduce_only": r.get::<Option<bool>, _>("reduce_only"),
         "reason": r.get::<Option<String>, _>("reason"),
         "priority": r.get::<Option<i32>, _>("priority"),
@@ -394,7 +394,7 @@ async fn events_for(
 ) -> Result<Value, ApiError> {
     let rows = sqlx::query(
         "select e.id, e.at, e.cloid, e.kind, e.status, e.batch, e.error,
-                coalesce(e.side, o.side) as side, coalesce(e.exec, o.exec) as exec,
+                coalesce(e.side, o.side) as side, coalesce(e.tif, o.tif) as tif,
                 coalesce(e.reduce_only, o.reduce_only) as reduce_only,
                 coalesce(e.reason, o.reason) as reason, coalesce(e.priority, o.priority) as priority,
                 e.px::text as px, e.sz::text as sz, o.px::text as order_px, o.sz::text as order_sz,
@@ -427,7 +427,7 @@ async fn events_for(
                 "batch": r.get::<Option<i64>, _>("batch"),
                 "error": r.get::<Option<String>, _>("error"),
                 "side": r.get::<Option<String>, _>("side"),
-                "exec": r.get::<Option<String>, _>("exec"),
+                "tif": r.get::<Option<String>, _>("tif"),
                 "reduce_only": r.get::<Option<bool>, _>("reduce_only"),
                 "reason": r.get::<Option<String>, _>("reason"),
                 "priority": r.get::<Option<i32>, _>("priority"),
