@@ -86,7 +86,9 @@
   // step by step: the insert when it left us, the ack when the answer was
   // read, the fill when the venue matched it. Newest first.
   const eventLabel = (e) => {
-    if (e.kind === "sent") return !e.reduce_only ? "open" : e.exec === "alo" ? "rung" : "cross";
+    // Named for what the order IS, as the legend already does: "rung" and
+    // "cross" are the code's ladder vocabulary and mean nothing to a reader.
+    if (e.kind === "sent") return !e.reduce_only ? "open IOC" : e.exec === "alo" ? "close ALO" : "close IOC";
     if (e.kind === "acked") return e.status ?? "acked";
     if (e.kind === "cancelled") return `cancel ${e.status ?? "ok"}`;
     if (e.kind === "cancel_sent") return "cancel sent";

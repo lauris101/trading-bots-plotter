@@ -80,7 +80,8 @@ Open http://127.0.0.1:8095. Live orders are shown by default (the mode
 selector also offers dummy, or both). The list beside the plot is every
 EVENT of the selected key, newest first, one row each: the timestamp is the
 event's own clock (amber when it is the venue's), the badge names the event
-(open / rung / cross for an insert, then resting / filled / rejected, fill,
+(open IOC / close ALO / close IOC for an insert, then resting / filled /
+rejected, fill,
 amend landed / refused, cancel sent / ok / failed), the price is the event's
 own or, greyed, the order's when the event carries none. A fill's note shows
 its fee, its closed pnl and how long after the venue's stamp we saw it. The
