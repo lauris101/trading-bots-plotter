@@ -11,7 +11,7 @@
     win: null,          // the built window: lines, marks, deviation, full range
     view: null,         // {x0, x1, y0, y1} in ms and price
     hidden: new Set(),  // series ids toggled off in the legend
-    drag: null, hoverPt: null, pinned: null, hoverCloid: null, hoverEvent: null, selectedEvent: null, raf: 0,
+    drag: null, hoverPt: null, pinned: null, hoverCloid: null, hoverEvent: null, selectedEvent: null, keepZoom: null, raf: 0,
     firstFill: true,
   };
 
@@ -121,7 +121,7 @@
     tb.innerHTML = events.map((e) => {
       const px = e.px ?? e.order_px;
       return `
-      <tr class="o${state.selectedEvent === e.id ? " ev-sel" : ""}" data-cloid="${esc(e.cloid)}" data-id="${e.id}" data-t="${e.t}">
+      <tr class="o${state.selectedEvent === e.id ? " ev-sel" : ""}" data-cloid="${esc(e.cloid)}" data-id="${e.id}" data-t="${e.t}" data-px="${esc(px ?? "")}">
         <td class="mono${venueClock(e) ? " venue" : ""}" title="${venueClock(e) ? "the venue's fill time" : "our clock"}">${fmtMs(e.t).slice(5)}</td>
         <td><span class="b b-${badgeClass(e)}" title="${esc(e.kind)}${e.status ? ": " + esc(e.status) : ""}">${esc(eventLabel(e))}</span></td>
         <td class="mono cloid" title="${esc(e.cloid)} (click to copy)">${esc(shortCloid(e.cloid))}</td>
@@ -135,7 +135,7 @@
       tr.onclick = () => {
         state.selected = tr.dataset.cloid;
         state.selectedEvent = Number(tr.dataset.id);
-        setCentre(Number(tr.dataset.t));
+        centreOn(Number(tr.dataset.t), Number(tr.dataset.px));
       };
       // Hovering the row rings every point the order left on the plot: the
       // insert, its fills, an amend, the cancel. One order is usually
@@ -273,6 +273,35 @@
     hyperliquid: { width: 2, color: "#e3b341", label: "hyperliquid" },
   };
 
+  /** Bring an event to the middle WITHOUT changing the zoom: the visible
+   *  width and height stay what they are, the view slides so the dot is
+   *  centred. Inside the loaded window that is a pan and a redraw; outside
+   *  it the window is reloaded around the event and the same zoom applied
+   *  to it. Showing the whole window again is what double-click is for. */
+  function centreOn(t, px) {
+    const v = state.view, win = state.win;
+    if (!v || !win) { setCentre(t); return; }
+    const w = v.x1 - v.x0, h = v.y1 - v.y0;
+    const nv = { x0: t - w / 2, x1: t + w / 2, y0: v.y0, y1: v.y1 };
+    // Bring the dot into the price range only when it is outside it; a dot
+    // already on screen does not move the y axis under the reader.
+    if (Number.isFinite(px) && (px < v.y0 || px > v.y1)) { nv.y0 = px - h / 2; nv.y1 = px + h / 2; }
+    if (nv.x0 >= win.full.x0 && nv.x1 <= win.full.x1) {
+      state.view = nv;
+      for (const tr of $("events").querySelectorAll("tr.o")) {
+        tr.classList.toggle("sel", tr.dataset.cloid === state.selected);
+        tr.classList.toggle("ev-sel", Number(tr.dataset.id) === state.selectedEvent);
+      }
+      $("centre").value = fmt(t);
+      state.centreMs = t;
+      requestDraw();
+      return;
+    }
+    // Off the loaded window: fetch a new one around it, keep the zoom.
+    state.keepZoom = { w, h, px };
+    setCentre(t);
+  }
+
   async function load() {
     const bot = $("bot").value, inst = $("instrument").value, mode = $("mode").value;
     if (!bot || !inst || state.centreMs == null) return;
@@ -293,6 +322,16 @@
     }
     state.win = build(w, from, to, inst);
     state.view = { ...state.win.full };
+    // A centring that crossed out of the old window arrives here with the
+    // zoom it had; apply it around the new centre if it fits.
+    const keep = state.keepZoom;
+    state.keepZoom = null;
+    if (keep && keep.w < to - from) {
+      const full = state.win.full;
+      const nv = { x0: state.centreMs - keep.w / 2, x1: state.centreMs + keep.w / 2, y0: full.y0, y1: full.y1 };
+      if (Number.isFinite(keep.px) && keep.h > 0) { nv.y0 = keep.px - keep.h / 2; nv.y1 = keep.px + keep.h / 2; }
+      state.view = nv;
+    }
     state.pinned = null;
     tip.hidden = true;
     tip.classList.remove("pinned");

@@ -85,8 +85,10 @@ amend landed / refused, cancel sent / ok / failed), the price is the event's
 own or, greyed, the order's when the event carries none. A fill's note shows
 its fee, its closed pnl and how long after the venue's stamp we saw it. The
 bot and instrument with the newest events are preselected, centred on the
-newest event; click any row to centre on it; `←` / `→` shift the window by
-half its length. Hovering a row rings every point of that order on the
+newest event; click any row to centre on it at the zoom you are at (the
+view slides, and reloads around the event if it lies outside the loaded
+window; double-click is what shows the whole window again); `←` / `→` shift
+the window by half its length. Hovering a row rings every point of that order on the
 plot, its own event heaviest.
 
 For an exact window, fill in `from` and `to` (UTC, `YYYY-MM-DD HH:MM:SS.mmm`);
