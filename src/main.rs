@@ -96,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/bots", get(bots))
         .route("/api/orders", get(orders))
+        .route("/api/events", get(events))
         .route("/api/window", get(window))
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -192,6 +193,75 @@ async fn orders(State(app): State<Arc<App>>, Query(q): Query<OrdersQuery>) -> Ap
         })
         .collect();
     Ok(Json(json!({ "orders": out })))
+}
+
+// ---- every event of one key, newest first --------------------------------
+//
+// The list the page navigates by. One row per event rather than per order,
+// each on its own clock: `at` is the bot's wire time for what the bot did
+// (sent, amend, cancel_sent), the reply-read time for what the venue
+// answered (acked, cancelled), and the VENUE's own fill time for a fill -
+// so a fill sits where it crossed the spread, not where we heard about it.
+// `received_at` is when control recorded it, which for a fill is the delay
+// between the two clocks.
+
+async fn events(State(app): State<Arc<App>>, Query(q): Query<OrdersQuery>) -> ApiResult {
+    let rows = sqlx::query(
+        "select e.id, e.at, e.received_at, e.cloid, e.kind, e.status, e.batch, e.error,
+                coalesce(e.side, o.side) as side, coalesce(e.exec, o.exec) as exec,
+                coalesce(e.reduce_only, o.reduce_only) as reduce_only,
+                coalesce(e.reason, o.reason) as reason, coalesce(e.priority, o.priority) as priority,
+                e.px::text as px, e.sz::text as sz, o.px::text as order_px, o.sz::text as order_sz,
+                o.status as order_status, o.avg_px::text as order_avg_px, o.filled_sz::text as order_filled,
+                e.oid, e.fill_id, e.fee::text as fee, e.closed_pnl::text as closed_pnl, e.source, o.mode
+         from bot_order_events e join bot_orders o on o.cloid = e.cloid
+         where e.bot = $1 and upper(o.instrument) = upper($2)
+           and ($3::text is null or o.mode = $3)
+         order by e.at desc, e.id desc limit $4",
+    )
+    .bind(&q.bot)
+    .bind(&q.instrument)
+    .bind(q.mode.as_deref().filter(|m| !m.is_empty()))
+    .bind(q.limit.unwrap_or(600).clamp(1, 5_000))
+    .fetch_all(&app.pool)
+    .await
+    .map_err(internal)?;
+    let out: Vec<Value> = rows.iter().map(event_json).collect();
+    Ok(Json(json!({ "events": out })))
+}
+
+/// One event row as the page reads it, shared by the list and the window.
+fn event_json(r: &sqlx::postgres::PgRow) -> Value {
+    json!({
+        "id": r.get::<i64, _>("id"),
+        "t": r.get::<DateTime<Utc>, _>("at").timestamp_millis(),
+        "at": r.get::<DateTime<Utc>, _>("at"),
+        "received_at": r.try_get::<DateTime<Utc>, _>("received_at").ok(),
+        "cloid": r.get::<String, _>("cloid"),
+        "kind": r.get::<String, _>("kind"),
+        "status": r.get::<Option<String>, _>("status"),
+        "batch": r.get::<Option<i64>, _>("batch"),
+        "error": r.get::<Option<String>, _>("error"),
+        "side": r.get::<Option<String>, _>("side"),
+        "exec": r.get::<Option<String>, _>("exec"),
+        "reduce_only": r.get::<Option<bool>, _>("reduce_only"),
+        "reason": r.get::<Option<String>, _>("reason"),
+        "priority": r.get::<Option<i32>, _>("priority"),
+        "px": r.get::<Option<String>, _>("px"),
+        "sz": r.get::<Option<String>, _>("sz"),
+        "order_px": r.get::<Option<String>, _>("order_px"),
+        "order_sz": r.get::<Option<String>, _>("order_sz"),
+        "order_status": r.get::<String, _>("order_status"),
+        "order_avg_px": r.get::<Option<String>, _>("order_avg_px"),
+        "order_filled": r.get::<String, _>("order_filled"),
+        "oid": r.get::<Option<i64>, _>("oid"),
+        "fill_id": r.get::<Option<String>, _>("fill_id"),
+        "fee": r.get::<Option<String>, _>("fee"),
+        "closed_pnl": r.get::<Option<String>, _>("closed_pnl"),
+        "source": r.get::<Option<String>, _>("source"),
+        "mode": r.try_get::<Option<String>, _>("mode").ok().flatten(),
+        "decision": r.try_get::<Option<Value>, _>("decision").ok().flatten(),
+    })
 }
 
 // ---- one window: quotes of both venues plus every order event ---------------

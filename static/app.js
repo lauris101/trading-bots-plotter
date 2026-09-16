@@ -11,7 +11,7 @@
     win: null,          // the built window: lines, marks, deviation, full range
     view: null,         // {x0, x1, y0, y1} in ms and price
     hidden: new Set(),  // series ids toggled off in the legend
-    drag: null, hoverPt: null, pinned: null, hoverCloid: null, raf: 0,
+    drag: null, hoverPt: null, pinned: null, hoverCloid: null, hoverEvent: null, selectedEvent: null, raf: 0,
     firstFill: true,
   };
 
@@ -80,32 +80,68 @@
     $("instcount").textContent = q ? `${list.length} of ${all.length}` : `${all.length} instruments`;
   }
 
-  // ---- orders of the key ----
-  async function loadOrders() {
+  // ---- every event of the key ----
+  //
+  // One row per EVENT, each on its own clock, so a move can be replayed
+  // step by step: the insert when it left us, the ack when the answer was
+  // read, the fill when the venue matched it. Newest first.
+  const eventLabel = (e) => {
+    if (e.kind === "sent") return !e.reduce_only ? "open" : e.exec === "alo" ? "rung" : "cross";
+    if (e.kind === "acked") return e.status ?? "acked";
+    if (e.kind === "cancelled") return `cancel ${e.status ?? "ok"}`;
+    if (e.kind === "cancel_sent") return "cancel sent";
+    if (e.kind === "amend") return e.amend_ok === false ? "amend refused" : e.amend_ok ? "amend landed" : "amend";
+    return e.kind;
+  };
+  const badgeClass = (e) => (e.kind === "acked" || e.kind === "cancelled" ? esc(e.status ?? e.kind) : esc(e.kind));
+  // Which clock an event's `at` is on. A fill is stamped by the venue at the
+  // match; everything else is stamped by us, when we sent it or read it.
+  const venueClock = (e) => e.kind === "fill";
+  const noteOf = (e) => {
+    const bits = [];
+    if (e.reason) bits.push(e.reason);
+    if (e.batch != null) bits.push(`b${e.batch}`);
+    if (e.kind === "fill") {
+      if (e.fee) bits.push(`fee ${e.fee}`);
+      if (e.closed_pnl && Number(e.closed_pnl)) bits.push(`pnl ${e.closed_pnl}`);
+      if (e.received_at) bits.push(`seen +${Math.max(0, Date.parse(e.received_at) - e.t)} ms`);
+    }
+    if (e.error) bits.push(e.error);
+    return bits.join("  ");
+  };
+
+  async function loadEvents() {
     const bot = $("bot").value, inst = $("instrument").value, mode = $("mode").value;
-    if (!bot || !inst) { $("orders").querySelector("tbody").innerHTML = ""; state.orders = []; return; }
-    const { orders } = await api(`/api/orders?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}&mode=${mode}&limit=300`);
-    state.orders = orders;
-    const tb = $("orders").querySelector("tbody");
-    tb.innerHTML = orders.map((o) => `
-      <tr class="o${state.selected === o.cloid ? " sel" : ""}" data-cloid="${esc(o.cloid)}" data-t="${Date.parse(o.sent_at)}">
-        <td class="mono">${fmt(Date.parse(o.sent_at)).slice(5, 23)}</td>
-        <td class="mono cloid" title="${esc(o.cloid)} (click to copy)">${esc(shortCloid(o.cloid))}</td>
-        <td class="${esc(o.side)}">${esc(o.side)}</td>
-        <td>${esc(o.exec)}${o.reduce_only ? " ro" : ""}${o.priority ? ` p${o.priority}` : ""}</td>
-        <td>${esc(o.reason)}</td>
-        <td class="mono">${esc(o.px)}</td>
-        <td class="mono">${esc(o.sz)}</td>
-        <td><span class="b b-${esc(o.status)}" title="${esc(o.error)}">${esc(o.status)}</span></td>
-        <td class="mono">${Number(o.filled_sz) ? `${esc(o.filled_sz)}${o.avg_px ? " @ " + esc(o.avg_px) : ""}` : ""}</td>
-      </tr>`).join("");
+    if (!bot || !inst) { $("events").querySelector("tbody").innerHTML = ""; state.events = []; return; }
+    const { events } = await api(`/api/events?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}&mode=${mode}&limit=600`);
+    // Pairing reads forwards in time; the list reads newest first.
+    pairAmends([...events].sort((a, b) => a.t - b.t || a.id - b.id));
+    state.events = events;
+    const tb = $("events").querySelector("tbody");
+    tb.innerHTML = events.map((e) => {
+      const px = e.px ?? e.order_px;
+      return `
+      <tr class="o${state.selectedEvent === e.id ? " ev-sel" : ""}" data-cloid="${esc(e.cloid)}" data-id="${e.id}" data-t="${e.t}">
+        <td class="mono${venueClock(e) ? " venue" : ""}" title="${venueClock(e) ? "the venue's fill time" : "our clock"}">${fmtMs(e.t).slice(5)}</td>
+        <td><span class="b b-${badgeClass(e)}" title="${esc(e.kind)}${e.status ? ": " + esc(e.status) : ""}">${esc(eventLabel(e))}</span></td>
+        <td class="mono cloid" title="${esc(e.cloid)} (click to copy)">${esc(shortCloid(e.cloid))}</td>
+        <td class="${esc(e.side)}">${esc(e.side)}${e.reduce_only ? " ro" : ""}</td>
+        <td class="mono${e.px == null ? " meta" : ""}" title="${e.px == null ? "the order's price; this event carries none of its own" : ""}">${esc(px)}</td>
+        <td class="mono">${esc(e.sz ?? "")}</td>
+        <td class="meta">${esc(noteOf(e))}</td>
+      </tr>`;
+    }).join("");
     for (const tr of tb.querySelectorAll("tr.o")) {
-      tr.onclick = () => { state.selected = tr.dataset.cloid; setCentre(Number(tr.dataset.t)); };
+      tr.onclick = () => {
+        state.selected = tr.dataset.cloid;
+        state.selectedEvent = Number(tr.dataset.id);
+        setCentre(Number(tr.dataset.t));
+      };
       // Hovering the row rings every point the order left on the plot: the
       // insert, its fills, an amend, the cancel. One order is usually
       // several marks scattered across the window.
-      tr.onmouseenter = () => { state.hoverCloid = tr.dataset.cloid; requestDraw(); };
-      tr.onmouseleave = () => { if (state.hoverCloid === tr.dataset.cloid) { state.hoverCloid = null; requestDraw(); } };
+      tr.onmouseenter = () => { state.hoverCloid = tr.dataset.cloid; state.hoverEvent = Number(tr.dataset.id); requestDraw(); };
+      tr.onmouseleave = () => { if (state.hoverCloid === tr.dataset.cloid) { state.hoverCloid = null; state.hoverEvent = null; requestDraw(); } };
       const cell = tr.querySelector("td.cloid");
       if (cell) {
         cell.onclick = (ev) => {
@@ -128,7 +164,10 @@
     clearRange();
     state.centreMs = ms;
     $("centre").value = fmt(ms);
-    for (const tr of $("orders").querySelectorAll("tr.o")) tr.classList.toggle("sel", tr.dataset.cloid === state.selected);
+    for (const tr of $("events").querySelectorAll("tr.o")) {
+      tr.classList.toggle("sel", tr.dataset.cloid === state.selected);
+      tr.classList.toggle("ev-sel", Number(tr.dataset.id) === state.selectedEvent);
+    }
     void load();
   }
 
@@ -155,6 +194,8 @@
     "rung:unfilled": ["square", 7, false, "close ALO, no fill"],
     "cross:filled": ["tri-left", 9, true, "close IOC, filled"],
     "cross:unfilled": ["tri-left", 9, false, "close IOC, no fill"],
+    "acked:resting": ["circle", 4, false, "acked: resting (our clock)"],
+    "acked:filled": ["diamond", 5, true, "acked: filled (our clock; the fills sit at the venue's time)"],
     "acked:rejected": ["circle-x", 9, false, "REJECTED"],
     "acked:unknown": ["diamond", 8, false, "acked: unknown"],
     "amend:ok": ["arrow", 9, true, "amended to here"],
@@ -178,7 +219,10 @@
     // says whether the order actually moved (see `pairAmends`). A refused
     // one is drawn hollow at the price it did NOT reach.
     if (e.kind === "amend") return e.amend_ok === false ? "amend:refused" : "amend:ok";
-    if (e.kind === "acked") return e.status === "rejected" || e.status === "unknown" ? `acked:${e.status}` : null;
+    // Every event is on the plot, an ack included: it marks the moment the
+    // answer was READ here, which against the fill's venue time is the
+    // round trip made visible.
+    if (e.kind === "acked") return KIND[`acked:${e.status}`] ? `acked:${e.status}` : "acked:unknown";
     if (e.kind === "cancelled") return `cancelled:${e.status ?? "ok"}`;
     return KIND[e.kind] ? e.kind : "other";
   };
@@ -303,7 +347,7 @@
       const id = `${e.side ?? "none"}|${k}`;
       const [symbol, size, solid, label] = KIND[k];
       (groups[id] ??= { id, name: `${e.side ?? ""} ${label}`.trim(), color: sideColor(e), symbol, size, solid, pts: [] })
-        .pts.push({ t: e.t, y: px, text: hover(e), cloid: e.cloid });
+        .pts.push({ t: e.t, y: px, text: hover(e), cloid: e.cloid, id: e.id });
       if (px < lo) lo = px; if (px > hi) hi = px;
     }
     const marks = Object.values(groups);
@@ -494,16 +538,18 @@
       for (const p of m.pts) {
         if (p.t < v.x0 || p.t > v.x1) continue;
         drawSymbol(ctx, m.symbol, xPx(P, p.t, v), yPx(P.price, p.y, v.y0, v.y1), m.size, m.color, m.solid);
-        if (state.hoverCloid && p.cloid === state.hoverCloid) ringed.push({ p, size: m.size });
+        if (state.hoverCloid && p.cloid === state.hoverCloid) ringed.push({ p, size: m.size, own: p.id === state.hoverEvent });
       }
     }
     // After the symbols, so a ring is never drawn over.
     if (ringed.length) {
       ctx.strokeStyle = "#d29922";
       ctx.lineWidth = 1.5;
-      for (const { p, size } of ringed) {
+      for (const { p, size, own } of ringed) {
+        // The hovered row's own event rings heavier than its siblings.
+        ctx.lineWidth = own ? 2.5 : 1.2;
         ctx.beginPath();
-        ctx.arc(xPx(P, p.t, v), yPx(P.price, p.y, v.y0, v.y1), size + 4, 0, Math.PI * 2);
+        ctx.arc(xPx(P, p.t, v), yPx(P.price, p.y, v.y0, v.y1), size + (own ? 6 : 4), 0, Math.PI * 2);
         ctx.stroke();
       }
     }
@@ -705,13 +751,13 @@
   })();
 
   // ---- wiring ----
-  $("bot").onchange = async () => { fillInstruments(); await loadOrders(); jumpLatest(); };
-  $("instrument").onchange = async () => { await loadOrders(); jumpLatest(); };
-  $("mode").onchange = async () => { fillInstruments(); await loadOrders(); jumpLatest(); };
+  $("bot").onchange = async () => { fillInstruments(); await loadEvents(); jumpLatest(); };
+  $("instrument").onchange = async () => { await loadEvents(); jumpLatest(); };
+  $("mode").onchange = async () => { fillInstruments(); await loadEvents(); jumpLatest(); };
   $("search").oninput = async () => {
     const before = $("instrument").value;
     fillInstruments();
-    if ($("instrument").value !== before) { await loadOrders(); jumpLatest(); }
+    if ($("instrument").value !== before) { await loadEvents(); jumpLatest(); }
   };
   $("span").onchange = () => void load();
   $("centre").onchange = () => { const t = parseCentre($("centre").value); if (t != null) { state.selected = null; setCentre(t); } };
@@ -740,17 +786,17 @@
     };
   }
   $("latest").onclick = jumpLatest;
-  $("reload").onclick = async () => { await loadKeys(); await loadOrders(); void load(); };
+  $("reload").onclick = async () => { await loadKeys(); await loadEvents(); void load(); };
   function jumpLatest() {
-    const o = state.orders[0];
-    if (o) { state.selected = o.cloid; setCentre(Date.parse(o.sent_at)); }
-    else { status("no orders for this key"); state.win = null; state.view = null; $("legend").innerHTML = ""; requestDraw(); }
+    const e = state.events[0];
+    if (e) { state.selected = e.cloid; state.selectedEvent = e.id; setCentre(e.t); }
+    else { status("no events for this key"); state.win = null; state.view = null; $("legend").innerHTML = ""; requestDraw(); }
   }
   (async () => {
     try {
       resize();
       await loadKeys();
-      await loadOrders();
+      await loadEvents();
       jumpLatest();
     } catch (e) {
       status(e.message, true);

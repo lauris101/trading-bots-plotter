@@ -7,7 +7,12 @@ with both venues' quotes and every order event on top of them.
 - Lines: Binance bid/ask (thin), Hyperliquid bid/ask (thick), as step lines;
   the ask is dashed. Every line toggles on its own in the legend.
 - Markers, one per order event, coloured by side (buy green, sell red), with
-  the whole record on hover, cloid included. The shape is the kind of order:
+  the whole record on hover, cloid included. Every event is on the plot, on
+  its own clock: an insert, amend or cancel at the moment it left this
+  machine, an ack at the moment the answer was read here, a fill at the
+  VENUE's own fill time and fill price - so a fill sits where it crossed the
+  spread, not where we heard about it, and the gap between a fill and its
+  ack is the round trip made visible. The shape is the kind of order:
   an opening IOC points right, a closing ALO rung is a square, a closing IOC
   points left; each is solid when the order filled at all and an outline when
   it did not. Fills are dots, cancels crosses, a rejection a circled cross,
@@ -72,10 +77,17 @@ just run                 # debug build; or: just run-release
 ```
 
 Open http://127.0.0.1:8095. Live orders are shown by default (the mode
-selector also offers dummy, or both). The bot and instrument with the newest
-live orders are preselected, centred on the newest order; click any order in
-the list to centre on it; `←` / `→` shift the window by half its length.
-Hovering an order in the list rings every point it left on the plot.
+selector also offers dummy, or both). The list beside the plot is every
+EVENT of the selected key, newest first, one row each: the timestamp is the
+event's own clock (amber when it is the venue's), the badge names the event
+(open / rung / cross for an insert, then resting / filled / rejected, fill,
+amend landed / refused, cancel sent / ok / failed), the price is the event's
+own or, greyed, the order's when the event carries none. A fill's note shows
+its fee, its closed pnl and how long after the venue's stamp we saw it. The
+bot and instrument with the newest events are preselected, centred on the
+newest event; click any row to centre on it; `←` / `→` shift the window by
+half its length. Hovering a row rings every point of that order on the
+plot, its own event heaviest.
 
 For an exact window, fill in `from` and `to` (UTC, `YYYY-MM-DD HH:MM:SS.mmm`);
 they override the centre and the window picker, and `←` / `→` then step by
@@ -85,7 +97,7 @@ to it. Clear either field, or click an order, to go back to centre + window.
 ## Layout
 
 ```
-src/main.rs        the server: /api/bots, /api/orders, /api/window
+src/main.rs        the server: /api/bots, /api/orders, /api/events, /api/window
 static/index.html  the page
 static/app.js      the plot
 ```
