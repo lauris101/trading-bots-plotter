@@ -265,6 +265,7 @@
     if (e.kind === "acked" && e.status === "filled") lines.push(`filled ${esc(e.sz)} @ ${esc(e.px)}${usd(e.px, e.sz)}`);
     if (e.error) lines.push(`<span style="color:#f85149">${esc(e.error)}</span>`);
     lines.push(`cloid ${esc(e.cloid)}${e.batch != null ? `  batch ${e.batch}` : ""}${e.mode ? `  ${esc(e.mode)}` : ""}${e.oid ? `  oid ${esc(e.oid)}` : ""}`);
+    if (e.parent_cloid) lines.push(`closes open ${esc(shortCloid(e.parent_cloid))}`);
     const d = e.decision;
     if (d) {
       const f = (v, p = 1) => (typeof v === "number" ? v.toFixed(p) : "-");
