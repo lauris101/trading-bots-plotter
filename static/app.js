@@ -332,6 +332,7 @@
       status(e.message, true);
       return;
     }
+    state.raw = { w, from, to, inst };
     state.win = build(w, from, to, inst);
     state.view = { ...state.win.full };
     // A centring that crossed out of the old window arrives here with the
@@ -387,6 +388,31 @@
       rows.forEach((r, i) => { t[i] = r.t; bid[i] = r.bid; ask[i] = r.ask; if (r.bid < lo) lo = r.bid; if (r.ask > hi) hi = r.ask; });
       lines.push({ id: `${v}:bid`, name: `${st.label} bid`, color: st.color, width: st.width, dash: null, t, v: bid });
       lines.push({ id: `${v}:ask`, name: `${st.label} ask`, color: st.color, width: st.width, dash: [4, 3], t, v: ask });
+    }
+    // The EMA of the Hyperliquid mid at the chosen half-life -- the bot's
+    // own definition, so the line is what the strategy sees, not a textbook
+    // EMA: the estimate moves toward the observation it has been HOLDING by
+    // 1 - 0.5^(dt / halftime) when the next one arrives, then holds that.
+    // Time-based, so irregular ticks are weighted by how long they stood.
+    // On a bucketed window the input is the bucket's last quote, which
+    // smooths the line more than the bot saw; the status line says when.
+    const emaMs = Number($("ema").value);
+    const hl = w.quotes.by_venue.hyperliquid;
+    if (emaMs > 0 && hl && hl.length) {
+      const t = new Float64Array(hl.length), v = new Float64Array(hl.length);
+      let est = 0, held = 0, ts = 0;
+      hl.forEach((r, i) => {
+        const mid = (r.bid + r.ask) / 2;
+        if (i === 0) { est = mid; held = mid; ts = r.t; }
+        else {
+          const dt = Math.max(0, r.t - ts);
+          est += (held - est) * (1 - Math.pow(0.5, dt / emaMs));
+          held = mid; ts = Math.max(ts, r.t);
+        }
+        t[i] = r.t; v[i] = est;
+      });
+      const st = VENUE.hyperliquid;
+      lines.push({ id: "hyperliquid:ema", name: `${st.label} mid ema ${emaMs} ms`, color: "#f5dc8c", width: 1.5, dash: [8, 3], t, v });
     }
     pairAmends(w.events);
     const groups = {};
@@ -847,6 +873,17 @@
     if ($("instrument").value !== before) { await loadEvents(); jumpLatest(); }
   };
   $("span").onchange = () => void load();
+  // A derived line only: rebuild from the window already fetched, and keep
+  // the zoom -- changing the half-life is looking harder at the same place.
+  const rebuildDerived = () => {
+    if (!state.raw) return;
+    const view = state.view;
+    state.win = build(state.raw.w, state.raw.from, state.raw.to, state.raw.inst);
+    state.view = view;
+    renderLegend();
+    requestDraw();
+  };
+  $("ema").onchange = rebuildDerived;
   $("centre").onchange = () => { const t = parseCentre($("centre").value); if (t != null) { state.selected = null; setCentre(t); } };
   // An explicit range shifts by half ITS length and stays explicit; the
   // centre + window pair keeps its old behaviour.
