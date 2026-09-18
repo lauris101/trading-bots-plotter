@@ -349,7 +349,7 @@
     tip.classList.remove("pinned");
     renderLegend();
     const nq = state.win.lines.reduce((a, l) => a + (l.id.endsWith(":bid") ? l.t.length : 0), 0);
-    status(`${nq} quotes, ${w.events.length} events, ${fmt(from).slice(11, 19)} to ${fmt(to).slice(11, 19)} UTC${w.quotes.bucketed_ms ? `, bucketed to ${w.quotes.bucketed_ms} ms` : ""}`);
+    status(`${nq} quotes, ${w.events.length} events, ${(w.conditions ?? []).length} conditions, ${fmt(from).slice(11, 19)} to ${fmt(to).slice(11, 19)} UTC${w.quotes.bucketed_ms ? `, bucketed to ${w.quotes.bucketed_ms} ms` : ""}`);
     requestDraw();
   }
 
@@ -417,8 +417,23 @@
     const threshold = last ? last.decision.threshold_bps : null;
     const pad = Number.isFinite(lo) && hi > lo ? (hi - lo) * 0.06 : Math.abs(lo || 1) * 0.001;
     const full = { x0: from, x1: to, y0: Number.isFinite(lo) ? lo - pad : 0, y1: Number.isFinite(hi) ? hi + pad : 1 };
-    return { inst, lines, marks, dev, threshold, full };
+    // Time-anchored, not price-anchored: a hold has no price, and what it
+    // explains is the ABSENCE of orders in that stretch.
+    const conditions = (w.conditions ?? [])
+      .filter((c) => CONDITION[c.kind])
+      .map((c) => ({ t: c.t, kind: c.kind, details: c.details ?? {} }));
+    return { inst, lines, marks, dev, threshold, full, conditions };
   }
+
+  /** The conditions worth a rule on the chart, and how they are drawn. A
+   *  hold is why nothing was traded, so it belongs where the eye is already
+   *  looking for the missing order. */
+  const CONDITION = {
+    shock_hold:     ["#d29922", "shock"],
+    no_follow_hold: ["#db6d28", "no follow"],
+    phase:          ["#f85149", "phase"],
+    resync:         ["#a371f7", "resync"],
+  };
 
   // ---- legend: every line and marker group toggles on its own ----
   function renderLegend() {
@@ -566,6 +581,27 @@
       ctx.fillStyle = "#8b98a9"; ctx.fillText(tk.label, P.left - 6, y);
     }
     ctx.save(); ctx.beginPath(); ctx.rect(P.left, P.price.top, P.w, P.price.h); ctx.clip();
+    // Conditions first, so every quote line and marker sits on top of them:
+    // they are background, not something to read a price off.
+    for (const c of w.conditions ?? []) {
+      if (c.t < v.x0 || c.t > v.x1) continue;
+      const [color, label] = CONDITION[c.kind];
+      const x = xPx(P, c.t, v);
+      ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.globalAlpha = 0.55;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(x, P.price.top); ctx.lineTo(x, P.price.top + P.price.h); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = color;
+      ctx.font = "10px ui-monospace, monospace";
+      ctx.save();
+      ctx.translate(x + 3, P.price.top + 4);
+      ctx.textAlign = "left"; ctx.textBaseline = "top";
+      const ms = c.details?.hold_ms;
+      ctx.fillText(Number.isFinite(ms) ? `${label} ${Math.round(ms / 100) / 10}s` : label, 0, 0);
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
     for (const l of w.lines) {
       if (state.hidden.has(l.id) || !l.t.length) continue;
       let i0 = lowerBound(l.t, v.x0); if (i0 > 0) i0--;

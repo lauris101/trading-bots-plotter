@@ -302,16 +302,58 @@ async fn window(State(app): State<Arc<App>>, Query(q): Query<WindowQuery>) -> Ap
         .single()
         .ok_or_else(|| bad("to_ms"))?;
 
-    let (quotes, events) = tokio::join!(
+    let (quotes, events, conditions) = tokio::join!(
         quotes_for(&app, &q.instrument, from, to),
         events_for(&app, &q, from, to),
+        conditions_for(&app, &q, from, to),
     );
     Ok(Json(json!({
         "from_ms": q.from_ms,
         "to_ms": q.to_ms,
         "quotes": quotes?,
         "events": events?,
+        "conditions": conditions?,
     })))
+}
+
+/// What the key was prevented from doing, from `bot_events`: the leader in
+/// shock, the lagger not following the last open, a fault that stopped the
+/// key and its recovery. Separate from the order events because these are
+/// about the times there is NO order to look at -- the gap in the order
+/// series is the thing being explained.
+async fn conditions_for(
+    app: &App,
+    q: &WindowQuery,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Value, ApiError> {
+    let rows = sqlx::query(
+        "select id, at, kind, coalesce(strategy, '') as strategy, details
+         from bot_events
+         where bot = $1 and instrument is not null and upper(instrument) = upper($2)
+           and at >= $3 and at <= $4
+         order by id",
+    )
+    .bind(&q.bot)
+    .bind(&q.instrument)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&app.pool)
+    .await
+    .map_err(internal)?;
+    let out: Vec<Value> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.get::<i64, _>("id"),
+                "t": r.get::<DateTime<Utc>, _>("at").timestamp_millis(),
+                "kind": r.get::<String, _>("kind"),
+                "strategy": r.get::<String, _>("strategy"),
+                "details": r.get::<Value, _>("details"),
+            })
+        })
+        .collect();
+    Ok(json!(out))
 }
 
 /// The scraped quotes of an instrument on every venue in the window. The
