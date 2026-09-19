@@ -70,6 +70,8 @@
     <option value="600000">10 min</option><option value="1800000">30 min</option><option value="3600000">1 h</option>
   </select></label>
   <label class="f" title="EMA of the Hyperliquid mid, the bot's own definition (time-based half-life); 0 = off">hl mid ema (ms) <input id="ema" class="mono" type="number" min="0" step="10" value="0" style="width:70px" placeholder="0 = off"></label>
+  <label class="f" title="the exit slope's two EMA half-lives (taker.exit.slope_fast_ms / slope_slow_ms): slope = (fast - slow) / (tau_slow - tau_fast), bps of the mid per second, on the right axis of the lower pane; 0 in either = off">slope emas fast/slow (ms)
+    <span style="display:flex;gap:3px"><input id="slopefast" class="mono" type="number" min="0" step="10" value="100" style="width:62px"><input id="slopeslow" class="mono" type="number" min="0" step="10" value="400" style="width:62px"></span></label>
   <label class="f">centre (UTC) <input id="centre" class="mono" style="width:190px" placeholder="click an order, or type"></label>
   <label class="f">from (UTC) <input id="from" class="mono" style="width:190px" placeholder="exact range, overrides window"></label>
   <label class="f">to (UTC) <input id="to" class="mono" style="width:190px" placeholder="blank = use window"></label>

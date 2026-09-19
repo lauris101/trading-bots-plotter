@@ -132,6 +132,9 @@
       if (e.closed_pnl && Number(e.closed_pnl)) bits.push(`pnl ${e.closed_pnl}`);
       if (e.received_at) bits.push(`seen +${Math.max(0, Date.parse(e.received_at) - e.t)} ms`);
     }
+    if (e.kind === "sent" && e.slope && Number.isFinite(e.slope.bps_per_s)) {
+      bits.push(`slope ${e.slope.bps_per_s >= 0 ? "+" : ""}${e.slope.bps_per_s.toFixed(1)}${e.slope.verdict && e.slope.verdict !== "none" ? " " + e.slope.verdict : ""}`);
+    }
     if (e.error) bits.push(e.error);
     return bits.join("  ");
   };
@@ -286,6 +289,14 @@
       if (e.amend_error) lines.push(`<span style="color:#f85149">${esc(e.amend_error)}</span>`);
     }
     if (e.kind === "fill") lines.push(`fill px ${esc(e.px)} sz ${esc(e.sz)}${usd(e.px, e.sz)}${e.fee ? `  fee $${esc(e.fee)}` : ""}${e.closed_pnl ? `  pnl $${esc(e.closed_pnl)}` : ""} (${esc(e.source)})`);
+    const s = e.slope;
+    if (s && Number.isFinite(s.bps_per_s)) {
+      // What the bot read off the lagger's slope when it decided this close, and what it did with it.
+      const f = (v, p = 1) => (typeof v === "number" ? v.toFixed(p) : "-");
+      lines.push(`<b>lagger slope</b> ${s.bps_per_s >= 0 ? "+" : ""}${f(s.bps_per_s)} bps/s ${s.in_favour ? "in favour" : "against"}${s.significant ? "" : ", below the noise floor"}`
+        + `  ->  ${esc(s.verdict)}${s.enabled ? "" : " (slope exit off: recorded only)"}`);
+      lines.push(`slope emas fast ${f(s.fast, 6)} slow ${f(s.slow, 6)} mid ${f(s.mid, 6)}`);
+    }
     if (e.kind === "acked" && e.status === "filled") lines.push(`filled ${esc(e.sz)} @ ${esc(e.px)}${usd(e.px, e.sz)}`);
     if (e.error) lines.push(`<span style="color:#f85149">${esc(e.error)}</span>`);
     lines.push(`cloid ${esc(e.cloid)}${e.batch != null ? `  batch ${e.batch}` : ""}${e.mode ? `  ${esc(e.mode)}` : ""}${e.oid ? `  oid ${esc(e.oid)}` : ""}`);
@@ -303,6 +314,7 @@
   };
 
   // ---- load a window and build the drawable series ----
+  const SLOPE_COLOR = "#ff9f43";
   const VENUE = {
     binance_perps: { width: 1, color: "#3d7bd6", label: "binance" },
     binance: { width: 1, color: "#5aa0ff", label: "binance spot" },
@@ -439,21 +451,45 @@
     // smooths the line more than the bot saw; the status line says when.
     const emaMs = Number($("ema").value);
     const hl = w.quotes.by_venue.hyperliquid;
-    if (emaMs > 0 && hl && hl.length) {
-      const t = new Float64Array(hl.length), v = new Float64Array(hl.length);
+    /** The bot's EMA of the Hyperliquid mid at `halftimeMs`, one value per
+     *  quote, evaluated as of that quote. */
+    const emaOf = (halftimeMs) => {
+      const v = new Float64Array(hl.length);
       let est = 0, held = 0, ts = 0;
       hl.forEach((r, i) => {
         const mid = (r.bid + r.ask) / 2;
         if (i === 0) { est = mid; held = mid; ts = r.t; }
         else {
           const dt = Math.max(0, r.t - ts);
-          est += (held - est) * (1 - Math.pow(0.5, dt / emaMs));
+          est += (held - est) * (1 - Math.pow(0.5, dt / halftimeMs));
           held = mid; ts = Math.max(ts, r.t);
         }
-        t[i] = r.t; v[i] = est;
+        v[i] = est;
       });
+      return v;
+    };
+    if (emaMs > 0 && hl && hl.length) {
+      const t = Float64Array.from(hl, (r) => r.t);
       const st = VENUE.hyperliquid;
-      lines.push({ id: "hyperliquid:ema", name: `${st.label} mid ema ${emaMs} ms`, color: "#f5dc8c", width: 1.5, dash: [8, 3], t, v });
+      lines.push({ id: "hyperliquid:ema", name: `${st.label} mid ema ${emaMs} ms`, color: "#f5dc8c", width: 1.5, dash: [8, 3], t, v: emaOf(emaMs) });
+    }
+    // The exit slope, as the bot reads it (taker.exit.slope_fast_ms /
+    // slope_slow_ms): two EMAs of the mid, slope = (fast - slow) /
+    // (tau_slow - tau_fast) with tau = half-life / ln 2, in bps of the mid
+    // per second. Drawn on the lower pane's right axis; the tangent at each
+    // exit IOC comes from the slope the bot RECORDED with that order when
+    // there is one, else from this series at that instant.
+    const slopeFast = Number($("slopefast").value), slopeSlow = Number($("slopeslow").value);
+    let slope = null;
+    if (slopeFast > 0 && slopeSlow > slopeFast && hl && hl.length) {
+      const fast = emaOf(slopeFast), slow = emaOf(slopeSlow);
+      const dtau = (slopeSlow - slopeFast) / Math.LN2; // ms
+      const t = Float64Array.from(hl, (r) => r.t), v = new Float64Array(hl.length);
+      hl.forEach((r, i) => {
+        const mid = (r.bid + r.ask) / 2;
+        v[i] = mid > 0 ? ((fast[i] - slow[i]) / dtau) * 1000 / mid * 10000 : 0;
+      });
+      slope = { t, v, fast: slopeFast, slow: slopeSlow };
     }
     pairAmends(w.events);
     const groups = {};
@@ -465,7 +501,7 @@
       const id = `${e.side ?? "none"}|${k}`;
       const [symbol, size, solid, label] = KIND[k];
       (groups[id] ??= { id, name: `${e.side ?? ""} ${label}`.trim(), color: sideColor(e), symbol, size, solid, pts: [] })
-        .pts.push({ t: e.t, y: px, text: hover(e), cloid: e.cloid, id: e.id });
+        .pts.push({ t: e.t, y: px, text: hover(e), cloid: e.cloid, id: e.id, k, side: e.side, slope: e.slope ?? null });
       if (px < lo) lo = px; if (px > hi) hi = px;
     }
     const marks = Object.values(groups);
@@ -489,7 +525,7 @@
     const conditions = (w.conditions ?? [])
       .filter((c) => CONDITION[c.kind])
       .map((c) => ({ t: c.t, kind: c.kind, details: c.details ?? {} }));
-    return { inst, lines, marks, dev, threshold, full, conditions };
+    return { inst, lines, marks, dev, threshold, full, conditions, slope };
   }
 
   /** The conditions worth a rule on the chart, and how they are drawn. A
@@ -508,6 +544,12 @@
     const items = [
       ...state.win.lines.map((l) => ({ id: l.id, name: l.name, color: l.color, kind: l.dash ? "dash" : "line" })),
       ...state.win.marks.map((m) => ({ id: m.id, name: m.name, color: m.color, kind: m.symbol, solid: m.solid })),
+      ...(state.win.slope
+        ? [
+            { id: "slope:line", name: `lagger slope ${state.win.slope.fast}/${state.win.slope.slow} ms (bps/s, right axis)`, color: SLOPE_COLOR, kind: "line" },
+            { id: "slope:tangent", name: "slope at the exit IOC", color: SLOPE_COLOR, kind: "dash" },
+          ]
+        : []),
     ];
     el.innerHTML = items.map((it) => `<button class="lg${state.hidden.has(it.id) ? " off" : ""}" data-id="${esc(it.id)}"><canvas width="22" height="14"></canvas>${esc(it.name)}</button>`).join("")
       + `<span class="help"><b>drag</b> selects an area to zoom, <b>two fingers</b> pan, <b>pinch</b> (or ctrl + wheel) zooms, <b>double-click</b> shows the whole window</span>`;
@@ -530,7 +572,8 @@
 
   // ---- the canvas ----
   const cv = $("plot"), ctx = cv.getContext("2d"), wrap = $("plotwrap"), tip = $("tip");
-  const M = { l: 74, r: 16, t: 10, b: 30, gap: 26 };
+  // Room on the right for the slope's own axis in the lower pane.
+  const M = { l: 74, r: 54, t: 10, b: 30, gap: 26 };
   let W = 0, H = 0; // css pixels
   function panes() {
     const inner = H - M.t - M.b - M.gap;
@@ -567,6 +610,16 @@
     let lo = 0, hi = t.length;
     while (lo < hi) { const mid = (lo + hi) >> 1; if (t[mid] < x) lo = mid + 1; else hi = mid; }
     return lo;
+  }
+
+  /** The slope at a marker, bps/s: what the bot recorded with the order if
+   *  it did, else the page's series as of the marker's instant. */
+  function slopeAt(slope, p) {
+    if (p.slope && Number.isFinite(p.slope.bps_per_s)) return p.slope.bps_per_s;
+    if (!slope || !slope.t.length) return null;
+    let i = lowerBound(slope.t, p.t);
+    if (i >= slope.t.length || slope.t[i] > p.t) i--;
+    return i >= 0 ? slope.v[i] : null;
   }
 
   function timeTicks(v, wpx) {
@@ -695,6 +748,32 @@
         if (state.hoverCloid && p.cloid === state.hoverCloid) ringed.push({ p, size: m.size, own: p.id === state.hoverEvent });
       }
     }
+    // The slope at each exit IOC, as a tangent through the marker: the
+    // bot's recorded read when the order carries one, else this page's
+    // series at that instant. Green when the mid was running the close's
+    // way (up for a closing sell, down for a closing buy), red against.
+    if (w.slope && !state.hidden.has("slope:tangent")) {
+      const halfMs = (v.x1 - v.x0) * 0.08;
+      for (const m of w.marks) {
+        if (state.hidden.has(m.id)) continue;
+        for (const p of m.pts) {
+          if (!String(p.k).startsWith("cross:") || p.t < v.x0 || p.t > v.x1) continue;
+          const bps = slopeAt(w.slope, p);
+          if (bps == null) continue;
+          const favour = p.side === "sell" ? bps > 0 : bps < 0;
+          const dy = (bps / 10000) * p.y * (halfMs / 1000); // price over halfMs
+          ctx.strokeStyle = favour ? GREEN : RED; ctx.lineWidth = 1.6; ctx.setLineDash(p.slope ? [] : [4, 3]);
+          ctx.beginPath();
+          ctx.moveTo(xPx(P, p.t - halfMs, v), yPx(P.price, p.y - dy, v.y0, v.y1));
+          ctx.lineTo(xPx(P, p.t + halfMs, v), yPx(P.price, p.y + dy, v.y0, v.y1));
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = favour ? GREEN : RED; ctx.font = "10px ui-monospace, monospace"; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+          ctx.fillText(`${bps >= 0 ? "+" : ""}${bps.toFixed(1)} bps/s${p.slope?.verdict && p.slope.verdict !== "none" ? " " + p.slope.verdict : ""}`, xPx(P, p.t + halfMs, v) + 3, yPx(P.price, p.y + dy, v.y0, v.y1));
+          ctx.textBaseline = "middle";
+        }
+      }
+    }
     // After the symbols, so a ring is never drawn over.
     if (ringed.length) {
       for (const { p, size, own } of ringed) {
@@ -751,7 +830,35 @@
       ctx.lineTo(P.left + P.w, py);
       ctx.stroke();
     }
+    // The lagger's slope on its own (right-hand) axis, autoscaled to what is
+    // visible and always including zero, so the sign reads at a glance.
+    let slopeAxis = null;
+    const sl = w.slope;
+    if (sl && sl.t.length && !state.hidden.has("slope:line")) {
+      let i0 = lowerBound(sl.t, v.x0); if (i0 > 0) i0--;
+      const i1 = Math.min(sl.t.length - 1, lowerBound(sl.t, v.x1));
+      let lo = 0, hi = 0;
+      for (let i = i0; i <= i1; i++) { if (sl.v[i] < lo) lo = sl.v[i]; if (sl.v[i] > hi) hi = sl.v[i]; }
+      if (hi <= lo) { lo = -1; hi = 1; }
+      const pad = (hi - lo) * 0.08;
+      slopeAxis = { lo: lo - pad, hi: hi + pad };
+      ctx.strokeStyle = SLOPE_COLOR; ctx.lineWidth = 1.2; ctx.globalAlpha = 0.9; ctx.beginPath();
+      let py = yPx(P.bps, sl.v[i0], slopeAxis.lo, slopeAxis.hi);
+      ctx.moveTo(xPx(P, sl.t[i0], v), py);
+      for (let i = i0 + 1; i <= i1; i++) { const x = xPx(P, sl.t[i], v); ctx.lineTo(x, py); py = yPx(P.bps, sl.v[i], slopeAxis.lo, slopeAxis.hi); ctx.lineTo(x, py); }
+      ctx.lineTo(P.left + P.w, py);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
     ctx.restore();
+    if (slopeAxis) {
+      // Right-axis ticks for the slope, in the slope's colour.
+      ctx.textAlign = "left"; ctx.fillStyle = SLOPE_COLOR;
+      for (const tk of valueTicks(slopeAxis.lo, slopeAxis.hi, P.bps.h, 28)) {
+        const y = Math.round(yPx(P.bps, tk.y, slopeAxis.lo, slopeAxis.hi)) + 0.5;
+        ctx.fillText(tk.label, P.left + P.w + 4, y);
+      }
+    }
     ctx.save(); ctx.translate(14, P.bps.top + P.bps.h / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillStyle = "#8b98a9";
     ctx.fillText(w.threshold != null ? `leader over lagger, bps (dashed: threshold ${w.threshold.toFixed(1)})` : "leader over lagger, bps", 0, 0); ctx.restore();
 
@@ -925,6 +1032,8 @@
     requestDraw();
   };
   $("ema").onchange = rebuildDerived;
+  $("slopefast").onchange = rebuildDerived;
+  $("slopeslow").onchange = rebuildDerived;
   $("centre").onchange = () => { const t = parseCentre($("centre").value); if (t != null) { state.selected = null; setCentre(t); } };
   // An explicit range shifts by half ITS length and stays explicit; the
   // centre + window pair keeps its old behaviour.
