@@ -13,6 +13,8 @@
     hidden: new Set(),  // series ids toggled off in the legend
     drag: null, hoverPt: null, pinned: null, hoverCloid: null, hoverEvent: null, selectedEvent: null, keepZoom: null, raf: 0,
     firstFill: true,
+    loadSeq: 0,         // the newest window request; older answers are dropped
+    abort: null,        // the in-flight window request, cancelled by the next
   };
 
   const fmt = (ms) => new Date(ms).toISOString().replace("T", " ").replace("Z", "");
@@ -40,12 +42,34 @@
   const shortCloid = (c) => (String(c ?? "").length > 14 ? `${c.slice(0, 8)}..${c.slice(-6)}` : String(c ?? ""));
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-  async function api(path) {
-    const r = await fetch(path);
+  async function api(path, signal) {
+    const r = await fetch(path, { signal });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`);
     return body;
   }
+
+  // ---- the window cache ----
+  //
+  // A window is two database round trips away (Postgres and ClickHouse,
+  // both remote: 1.5-2 s measured from this box), so one already fetched
+  // is kept. Keyed on exactly what was asked for; stepping back to a
+  // window seen a moment ago costs nothing. A dozen is a session's worth.
+  const WINDOW_CACHE = 12;
+  const windowCache = new Map();
+  const cachedWindow = (key) => {
+    const w = windowCache.get(key);
+    if (w) { windowCache.delete(key); windowCache.set(key, w); } // most recent last
+    return w;
+  };
+  const rememberWindow = (key, w) => {
+    windowCache.set(key, w);
+    while (windowCache.size > WINDOW_CACHE) windowCache.delete(windowCache.keys().next().value);
+  };
+  /** The plot says it is waiting: dimmed, with the word on it, and the
+   *  pointer says so too. Cleared when the window that was asked for last
+   *  has arrived (or failed), never by an older one. */
+  const setLoading = (on) => { $("plotwrap").classList.toggle("loading", on); };
 
   // ---- keys ----
   async function loadKeys() {
@@ -324,14 +348,31 @@
     // The rest of the page still thinks in a centre: keep it on the range's
     // middle so the arrows, the order list and the plot agree.
     if (range) state.centreMs = Math.round((from + to) / 2);
-    status(range?.clamped ? "loading (range clamped to 6 h)" : "loading");
-    let w;
-    try {
-      w = await api(`/api/window?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}&mode=${mode}&from_ms=${from}&to_ms=${to}`);
-    } catch (e) {
-      status(e.message, true);
-      return;
+    // Only the NEWEST request may land. Two clicks in quick succession used
+    // to race: the first answer, arriving last, replaced the window the
+    // second click had asked for, and the plot sat on the wrong order.
+    const seq = ++state.loadSeq;
+    if (state.abort) state.abort.abort();
+    const abort = new AbortController();
+    state.abort = abort;
+    const key = `${bot}|${inst}|${mode}|${from}|${to}`;
+    let w = cachedWindow(key);
+    if (!w) {
+      status(range?.clamped ? "loading (range clamped to 6 h)" : "loading");
+      setLoading(true);
+      try {
+        w = await api(`/api/window?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}&mode=${mode}&from_ms=${from}&to_ms=${to}`, abort.signal);
+      } catch (e) {
+        if (seq !== state.loadSeq) return; // superseded: the newer request reports
+        setLoading(false);
+        status(e.message, true);
+        return;
+      }
+      if (seq !== state.loadSeq) return;
+      rememberWindow(key, w);
     }
+    setLoading(false);
+    state.abort = null;
     state.raw = { w, from, to, inst };
     state.win = build(w, from, to, inst);
     state.view = { ...state.win.full };
@@ -910,7 +951,8 @@
     };
   }
   $("latest").onclick = jumpLatest;
-  $("reload").onclick = async () => { await loadKeys(); await loadEvents(); void load(); };
+  // Reload means "ask the databases again": the remembered windows go too.
+  $("reload").onclick = async () => { windowCache.clear(); await loadKeys(); await loadEvents(); void load(); };
   function jumpLatest() {
     const e = state.events[0];
     if (e) { state.selected = e.cloid; state.selectedEvent = e.id; setCentre(e.t); }

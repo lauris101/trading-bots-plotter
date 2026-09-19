@@ -369,41 +369,49 @@ async fn quotes_for(
     let span_ms = (to - from).num_milliseconds().max(1);
     let f = from.format("%Y-%m-%d %H:%M:%S%.3f");
     let t = to.format("%Y-%m-%d %H:%M:%S%.3f");
-    let counted: String = app
-        .ch(&format!(
-            "SELECT venue, count() FROM {db}.quotes WHERE upper(instrument) = upper('{inst}') \
-             AND ts_venue BETWEEN '{f}' AND '{t}' GROUP BY venue FORMAT TSV",
-            db = app.ch_db
-        ))
-        .await?;
-    let mut max_count = 0i64;
-    for line in counted.lines() {
-        if let Some((_, n)) = line.split_once('\t') {
-            max_count = max_count.max(n.trim().parse().unwrap_or(0));
-        }
-    }
-    // Bucket only when a venue exceeds the payload budget; keep the last
-    // quote of each bucket, which is what a step line would show anyway.
-    let sql = if max_count > MAX_QUOTES_PER_VENUE {
-        let bucket_ms = (span_ms / MAX_QUOTES_PER_VENUE).max(1);
-        format!(
-            "SELECT venue, toUnixTimestamp64Milli(t) AS t, bid, ask FROM ( \
-                SELECT venue, toStartOfInterval(ts_venue, INTERVAL {bucket_ms} MILLISECOND) AS t, \
-                       argMax(bid, ts_venue) AS bid, argMax(ask, ts_venue) AS ask \
-                FROM {db}.quotes WHERE upper(instrument) = upper('{inst}') \
-                  AND ts_venue BETWEEN '{f}' AND '{t}' GROUP BY venue, t) \
-             ORDER BY venue, t FORMAT TSV",
-            db = app.ch_db
-        )
+    // ClickHouse is a remote round trip (0.3-0.8 s of latency from here
+    // before any work), so the window is ONE round trip, not two: the raw
+    // quotes and the bucketed ones are asked for together. The raw query
+    // stops one row past the budget per venue; if any venue reached it the
+    // bucketed answer is the one served. The bucket width depends only on
+    // the span, so the bucketed query needs no count to be right. The
+    // budget is a per-venue row cap, and the bucket keeps the last quote
+    // of its interval, which is what a step line would show anyway.
+    let bucket_ms = (span_ms / MAX_QUOTES_PER_VENUE).max(1);
+    let raw_sql = format!(
+        "SELECT venue, toUnixTimestamp64Milli(ts_venue) AS t, bid, ask FROM {db}.quotes \
+         WHERE upper(instrument) = upper('{inst}') AND ts_venue BETWEEN '{f}' AND '{t}' \
+         ORDER BY venue, ts_venue LIMIT {cap} BY venue FORMAT TSV",
+        db = app.ch_db,
+        cap = MAX_QUOTES_PER_VENUE + 1
+    );
+    let bucketed_sql = format!(
+        "SELECT venue, toUnixTimestamp64Milli(t) AS t, bid, ask FROM ( \
+            SELECT venue, toStartOfInterval(ts_venue, INTERVAL {bucket_ms} MILLISECOND) AS t, \
+                   argMax(bid, ts_venue) AS bid, argMax(ask, ts_venue) AS ask \
+            FROM {db}.quotes WHERE upper(instrument) = upper('{inst}') \
+              AND ts_venue BETWEEN '{f}' AND '{t}' GROUP BY venue, t) \
+         ORDER BY venue, t FORMAT TSV",
+        db = app.ch_db
+    );
+    let (raw, bucketed) = tokio::join!(app.ch(&raw_sql), app.ch(&bucketed_sql));
+    let raw = parse_quotes(&raw?);
+    let over_budget = raw
+        .values()
+        .any(|rows| rows.len() as i64 > MAX_QUOTES_PER_VENUE);
+    let by_venue = if over_budget {
+        parse_quotes(&bucketed?)
     } else {
-        format!(
-            "SELECT venue, toUnixTimestamp64Milli(ts_venue) AS t, bid, ask FROM {db}.quotes \
-             WHERE upper(instrument) = upper('{inst}') AND ts_venue BETWEEN '{f}' AND '{t}' \
-             ORDER BY venue, ts_venue FORMAT TSV",
-            db = app.ch_db
-        )
+        raw
     };
-    let body = app.ch(&sql).await?;
+    Ok(json!({
+        "bucketed_ms": if over_budget { Some(bucket_ms) } else { None },
+        "by_venue": by_venue,
+    }))
+}
+
+/// `venue \t t_ms \t bid \t ask` lines, grouped by venue in the order served.
+fn parse_quotes(body: &str) -> std::collections::BTreeMap<String, Vec<QuoteRow>> {
     let mut by_venue: std::collections::BTreeMap<String, Vec<QuoteRow>> = Default::default();
     for line in body.lines() {
         let mut it = line.split('\t');
@@ -421,10 +429,7 @@ async fn quotes_for(
             .or_default()
             .push(QuoteRow { t, bid, ask });
     }
-    Ok(json!({
-        "bucketed_ms": if max_count > MAX_QUOTES_PER_VENUE { Some((span_ms / MAX_QUOTES_PER_VENUE).max(1)) } else { None },
-        "by_venue": by_venue,
-    }))
+    by_venue
 }
 
 /// Every order event of the key in the window, with the order's own fields
