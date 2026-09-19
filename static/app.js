@@ -293,7 +293,7 @@
     if (s && Number.isFinite(s.bps_per_s)) {
       // What the bot read off the lagger's slope when it decided this close, and what it did with it.
       const f = (v, p = 1) => (typeof v === "number" ? v.toFixed(p) : "-");
-      lines.push(`<b>lagger slope</b> ${s.bps_per_s >= 0 ? "+" : ""}${f(s.bps_per_s)} bps/s ${s.in_favour ? "in favour" : "against"}${s.significant ? "" : ", below the noise floor"}`
+      lines.push(`<b>${esc(s.source ?? "lagger")} slope</b> ${s.bps_per_s >= 0 ? "+" : ""}${f(s.bps_per_s)} bps/s ${s.in_favour ? "in favour" : "against"}${s.significant ? "" : ", below the noise floor"}`
         + `  ->  ${esc(s.verdict)}${s.enabled ? "" : " (slope exit off: recorded only)"}`);
       lines.push(`slope emas fast ${f(s.fast, 6)} slow ${f(s.slow, 6)} mid ${f(s.mid, 6)}`);
     }
@@ -480,16 +480,31 @@
     // exit IOC comes from the slope the bot RECORDED with that order when
     // there is one, else from this series at that instant.
     const slopeFast = Number($("slopefast").value), slopeSlow = Number($("slopeslow").value);
+    // Whose mid (taker.exit.slope_exit.source): the lagger's, or the
+    // leader's, which quotes first and so turns first.
+    const slopeSrc = $("slopesrc").value === "leader" ? "leader" : "lagger";
+    const srcRows = slopeSrc === "leader" ? (w.quotes.by_venue.binance_perps ?? w.quotes.by_venue.binance) : hl;
     let slope = null;
-    if (slopeFast > 0 && slopeSlow > slopeFast && hl && hl.length) {
-      const fast = emaOf(slopeFast), slow = emaOf(slopeSlow);
+    if (slopeFast > 0 && slopeSlow > slopeFast && srcRows && srcRows.length) {
+      const emaOfRows = (rows, halftimeMs) => {
+        const v = new Float64Array(rows.length);
+        let est = 0, held = 0, ts = 0;
+        rows.forEach((r, i) => {
+          const mid = (r.bid + r.ask) / 2;
+          if (i === 0) { est = mid; held = mid; ts = r.t; }
+          else { const dt = Math.max(0, r.t - ts); est += (held - est) * (1 - Math.pow(0.5, dt / halftimeMs)); held = mid; ts = Math.max(ts, r.t); }
+          v[i] = est;
+        });
+        return v;
+      };
+      const fast = emaOfRows(srcRows, slopeFast), slow = emaOfRows(srcRows, slopeSlow);
       const dtau = (slopeSlow - slopeFast) / Math.LN2; // ms
-      const t = Float64Array.from(hl, (r) => r.t), v = new Float64Array(hl.length);
-      hl.forEach((r, i) => {
+      const t = Float64Array.from(srcRows, (r) => r.t), v = new Float64Array(srcRows.length);
+      srcRows.forEach((r, i) => {
         const mid = (r.bid + r.ask) / 2;
         v[i] = mid > 0 ? ((fast[i] - slow[i]) / dtau) * 1000 / mid * 10000 : 0;
       });
-      slope = { t, v, fast: slopeFast, slow: slopeSlow };
+      slope = { t, v, fast: slopeFast, slow: slopeSlow, source: slopeSrc };
     }
     pairAmends(w.events);
     const groups = {};
@@ -546,7 +561,7 @@
       ...state.win.marks.map((m) => ({ id: m.id, name: m.name, color: m.color, kind: m.symbol, solid: m.solid })),
       ...(state.win.slope
         ? [
-            { id: "slope:line", name: `lagger slope ${state.win.slope.fast}/${state.win.slope.slow} ms (bps/s, right axis)`, color: SLOPE_COLOR, kind: "line" },
+            { id: "slope:line", name: `${state.win.slope.source} slope ${state.win.slope.fast}/${state.win.slope.slow} ms (bps/s, right axis)`, color: SLOPE_COLOR, kind: "line" },
             { id: "slope:tangent", name: "slope at the exit IOC", color: SLOPE_COLOR, kind: "dash" },
           ]
         : []),
@@ -1034,6 +1049,7 @@
   $("ema").onchange = rebuildDerived;
   $("slopefast").onchange = rebuildDerived;
   $("slopeslow").onchange = rebuildDerived;
+  $("slopesrc").onchange = rebuildDerived;
   $("centre").onchange = () => { const t = parseCentre($("centre").value); if (t != null) { state.selected = null; setCentre(t); } };
   // An explicit range shifts by half ITS length and stays explicit; the
   // centre + window pair keeps its old behaviour.
