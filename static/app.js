@@ -307,7 +307,7 @@
       lines.push(`<b>decision</b> dev ${f(d.deviation_bps)} bps (raw ${f(d.raw_deviation_bps)}), basis ${f(d.basis_bps)}`);
       lines.push(`threshold ${f(d.threshold_bps)} bps, gain ${f(d.gain_bps)} (raw ${f(d.raw_gain_bps)}), rho ${f(d.rho, 2)}, delta ${f(d.delta_ms, 0)} ms`);
       lines.push(`leader mid ${esc(d.leader_mid)}  lagger ${esc(d.lagger_bid)} / ${esc(d.lagger_ask)}`);
-      if (d.leader_move_bps != null) lines.push(`leader moved ${f(d.leader_move_bps)} bps since its reference ${esc(d.leader_ref)}`);
+      if (d.leader_move_bps != null) lines.push(`leader moved ${f(d.leader_move_bps)} bps since its reference ${esc(d.leader_ref)}${d.leader_jump_bps != null ? `, sharpest ${f(d.leader_jump_bps)} bps in one jump span` : ""}`);
       lines.push(`quote age: leader ${f(d.leader_age_ms, 0)} ms, lagger ${f(d.lagger_age_ms, 0)} ms`);
     }
     return lines.join("<br>");
