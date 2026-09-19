@@ -473,8 +473,8 @@
       const st = VENUE.hyperliquid;
       lines.push({ id: "hyperliquid:ema", name: `${st.label} mid ema ${emaMs} ms`, color: "#f5dc8c", width: 1.5, dash: [8, 3], t, v: emaOf(emaMs) });
     }
-    // The exit slope, as the bot reads it (taker.exit.slope_fast_ms /
-    // slope_slow_ms): two EMAs of the mid, slope = (fast - slow) /
+    // The exit slope, as the bot reads it (taker.exit.slope_exit.fast_ms /
+    // slow_ms): two EMAs of the mid, slope = (fast - slow) /
     // (tau_slow - tau_fast) with tau = half-life / ln 2, in bps of the mid
     // per second. Drawn on the lower pane's right axis; the tangent at each
     // exit IOC comes from the slope the bot RECORDED with that order when
