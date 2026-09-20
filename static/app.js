@@ -315,6 +315,7 @@
 
   // ---- load a window and build the drawable series ----
   const SLOPE_COLOR = "#ff9f43";
+  const IMPULSE_COLOR = "#c084fc";
   const VENUE = {
     binance_perps: { width: 1, color: "#3d7bd6", label: "binance" },
     binance: { width: 1, color: "#5aa0ff", label: "binance spot" },
@@ -531,6 +532,31 @@
       const lm = (leader[i].bid + leader[i].ask) / 2, hm = (q.bid + q.ask) / 2;
       dev.t.push(q.t); dev.v.push(10000 * (lm / hm - 1));
     }
+    // The impulse gate's reading (taker.entry.leader_impulse_*): at every
+    // leader quote, how far the new mid stands from the EMA of the mids
+    // before it, at the chosen half-life, in bps and signed (up positive).
+    // The bot's EMA holds each observation until the next, so the estimate
+    // at a quote is the previous one moved toward the held mid by
+    // 1 - 0.5^(dt / half-life); the gap is the new mid over that estimate.
+    // A jump shows whole; a drift shows as rate x tau, small.
+    const impulseHl = Number($("impulsehl").value), impulseMin = Number($("impulsemin").value);
+    let impulse = null;
+    if (impulseHl > 0 && leader.length) {
+      const t = new Float64Array(leader.length), v = new Float64Array(leader.length);
+      let est = 0, held = 0, ts = 0;
+      leader.forEach((r, i) => {
+        const mid = (r.bid + r.ask) / 2;
+        if (i === 0) { est = mid; held = mid; ts = r.t; v[i] = 0; }
+        else {
+          const dt = Math.max(0, r.t - ts);
+          est += (held - est) * (1 - Math.pow(0.5, dt / impulseHl));
+          v[i] = est > 0 ? 10000 * (mid / est - 1) : 0;
+          held = mid; ts = Math.max(ts, r.t);
+        }
+        t[i] = r.t;
+      });
+      impulse = { t, v, hl: impulseHl, min: impulseMin };
+    }
     const last = [...w.events].reverse().find((e) => e.decision?.threshold_bps != null);
     const threshold = last ? last.decision.threshold_bps : null;
     const pad = Number.isFinite(lo) && hi > lo ? (hi - lo) * 0.06 : Math.abs(lo || 1) * 0.001;
@@ -540,7 +566,7 @@
     const conditions = (w.conditions ?? [])
       .filter((c) => CONDITION[c.kind])
       .map((c) => ({ t: c.t, kind: c.kind, details: c.details ?? {} }));
-    return { inst, lines, marks, dev, threshold, full, conditions, slope };
+    return { inst, lines, marks, dev, threshold, full, conditions, slope, impulse };
   }
 
   /** The conditions worth a rule on the chart, and how they are drawn. A
@@ -564,6 +590,9 @@
             { id: "slope:line", name: `${state.win.slope.source} slope ${state.win.slope.fast}/${state.win.slope.slow} ms (bps/s, right axis)`, color: SLOPE_COLOR, kind: "line" },
             { id: "slope:tangent", name: "slope at the exit IOC", color: SLOPE_COLOR, kind: "dash" },
           ]
+        : []),
+      ...(state.win.impulse
+        ? [{ id: "leader:impulse", name: `leader impulse ${state.win.impulse.hl} ms (bps${state.win.impulse.min > 0 ? `, gate ${state.win.impulse.min}` : ""})`, color: IMPULSE_COLOR, kind: "line" }]
         : []),
     ];
     el.innerHTML = items.map((it) => `<button class="lg${state.hidden.has(it.id) ? " off" : ""}" data-id="${esc(it.id)}"><canvas width="22" height="14"></canvas>${esc(it.name)}</button>`).join("")
@@ -819,6 +848,13 @@
       let lo = Infinity, hi = -Infinity;
       for (let i = i0; i <= i1; i++) { if (d.v[i] < lo) lo = d.v[i]; if (d.v[i] > hi) hi = d.v[i]; }
       if (w.threshold != null) { lo = Math.min(lo, -w.threshold); hi = Math.max(hi, w.threshold); }
+      const im = w.impulse;
+      if (im && im.t.length && !state.hidden.has("leader:impulse")) {
+        let j0 = lowerBound(im.t, v.x0); if (j0 > 0) j0--;
+        const j1 = Math.min(im.t.length - 1, lowerBound(im.t, v.x1));
+        for (let i = j0; i <= j1; i++) { if (im.v[i] < lo) lo = im.v[i]; if (im.v[i] > hi) hi = im.v[i]; }
+        if (im.min > 0) { lo = Math.min(lo, -im.min); hi = Math.max(hi, im.min); }
+      }
       lo = Math.min(lo, 0); hi = Math.max(hi, 0);
       if (Number.isFinite(lo) && hi > lo) { const pad = (hi - lo) * 0.08; blo = lo - pad; bhi = hi + pad; }
     }
@@ -843,6 +879,25 @@
       ctx.moveTo(xPx(P, d.t[i0], v), py);
       for (let i = i0 + 1; i <= i1; i++) { const x = xPx(P, d.t[i], v); ctx.lineTo(x, py); py = yPx(P.bps, d.v[i], blo, bhi); ctx.lineTo(x, py); }
       ctx.lineTo(P.left + P.w, py);
+      ctx.stroke();
+    }
+    // The leader's impulse on the same bps axis as the deviation, with the
+    // gate's threshold dashed either side of zero: an open needed the
+    // impulse past the dashed line on the deviation's side.
+    const im = w.impulse;
+    if (im && im.t.length && !state.hidden.has("leader:impulse")) {
+      if (im.min > 0) {
+        ctx.strokeStyle = IMPULSE_COLOR; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.globalAlpha = 0.7;
+        for (const s of [im.min, -im.min]) { const y = yPx(P.bps, s, blo, bhi); ctx.beginPath(); ctx.moveTo(P.left, y); ctx.lineTo(P.left + P.w, y); ctx.stroke(); }
+        ctx.setLineDash([]); ctx.globalAlpha = 1;
+      }
+      let i0 = lowerBound(im.t, v.x0); if (i0 > 0) i0--;
+      const i1 = Math.min(im.t.length - 1, lowerBound(im.t, v.x1));
+      ctx.strokeStyle = IMPULSE_COLOR; ctx.lineWidth = 1.2; ctx.beginPath();
+      // Spikes, not steps: the impulse is a reading AT each quote, and what
+      // it does between quotes is decay, which the line does not pretend to
+      // draw.
+      for (let i = i0; i <= i1; i++) { const x = xPx(P, im.t[i], v); ctx.moveTo(x, yPx(P.bps, 0, blo, bhi)); ctx.lineTo(x, yPx(P.bps, im.v[i], blo, bhi)); }
       ctx.stroke();
     }
     // The lagger's slope on its own (right-hand) axis, autoscaled to what is
@@ -1050,6 +1105,8 @@
   $("slopefast").onchange = rebuildDerived;
   $("slopeslow").onchange = rebuildDerived;
   $("slopesrc").onchange = rebuildDerived;
+  $("impulsehl").onchange = rebuildDerived;
+  $("impulsemin").onchange = rebuildDerived;
   $("centre").onchange = () => { const t = parseCentre($("centre").value); if (t != null) { state.selected = null; setCentre(t); } };
   // An explicit range shifts by half ITS length and stays explicit; the
   // centre + window pair keeps its old behaviour.
