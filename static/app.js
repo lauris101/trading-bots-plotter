@@ -671,7 +671,7 @@
       ...(state.win.impulse
         ? [
             { id: "leader:impulse", name: `leader impulse ${state.win.impulse.hl} ms (bps${state.win.impulse.min > 0 ? `, gate ${state.win.impulse.min}` : ""})`, color: IMPULSE_COLOR, kind: "line" },
-            ...(state.win.dev.gate ? [{ id: "gate:overlay", name: "gate on the deviation: green would open, red refused by the impulse", color: GREEN, kind: "line" }] : []),
+            ...(state.win.dev.gate ? [{ id: "gate:overlay", name: "gate bands: green an open would have gone through, red the impulse refused it", color: GREEN, kind: "line" }] : []),
           ]
         : []),
     ];
@@ -796,6 +796,29 @@
     c.stroke();
   }
 
+  /** The gate as background bands across `pane`: green where an open would
+   *  have gone through, red where the deviation was there but the impulse
+   *  refused it. Runs of consecutive samples become one band, so a stretch
+   *  reads as a stretch. Drawn under everything else in both panes. */
+  function paintGate(P, pane, v, d) {
+    if (!d.gate || state.hidden.has("gate:overlay")) return;
+    let i0 = lowerBound(d.t, v.x0); if (i0 > 0) i0--;
+    const i1 = Math.min(d.t.length - 1, lowerBound(d.t, v.x1));
+    for (const [want, color] of [[1, "rgba(63,185,80,0.22)"], [-1, "rgba(248,81,73,0.18)"]]) {
+      ctx.fillStyle = color;
+      let i = i0;
+      while (i <= i1) {
+        if (d.gate[i] !== want) { i++; continue; }
+        let j = i;
+        while (j + 1 <= i1 && d.gate[j + 1] === want) j++;
+        const x0 = Math.max(P.left, xPx(P, d.t[i], v));
+        const x1 = Math.min(P.left + P.w, j + 1 < d.t.length ? xPx(P, d.t[j + 1], v) : P.left + P.w);
+        ctx.fillRect(x0, pane.top, Math.max(1.5, x1 - x0), pane.h);
+        i = j + 1;
+      }
+    }
+  }
+
   function draw() {
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = "#0b0e13"; ctx.fillRect(0, 0, W, H);
@@ -825,7 +848,10 @@
       ctx.fillStyle = "#8b98a9"; ctx.fillText(tk.label, P.left - 6, y);
     }
     ctx.save(); ctx.beginPath(); ctx.rect(P.left, P.price.top, P.w, P.price.h); ctx.clip();
-    // Conditions first, so every quote line and marker sits on top of them:
+    // The gate first of all: where an open would have gone through, as a
+    // band across the whole pane, under the quotes and the markers.
+    paintGate(P, P.price, v, w.dev);
+    // Conditions next, so every quote line and marker sits on top of them:
     // they are background, not something to read a price off.
     for (const c of w.conditions ?? []) {
       if (c.t < v.x0 || c.t > v.x1) continue;
@@ -946,6 +972,7 @@
       ctx.fillStyle = "#8b98a9"; ctx.fillText(tk.label, P.left - 6, y);
     }
     ctx.save(); ctx.beginPath(); ctx.rect(P.left, P.bps.top, P.w, P.bps.h); ctx.clip();
+    paintGate(P, P.bps, v, w.dev);
     if (w.threshold != null) {
       ctx.strokeStyle = "#8b98a9"; ctx.lineWidth = 1; ctx.setLineDash([5, 4]);
       for (const s of [w.threshold, -w.threshold]) { const y = yPx(P.bps, s, blo, bhi); ctx.beginPath(); ctx.moveTo(P.left, y); ctx.lineTo(P.left + P.w, y); ctx.stroke(); }
@@ -960,23 +987,6 @@
       for (let i = i0 + 1; i <= i1; i++) { const x = xPx(P, d.t[i], v); ctx.lineTo(x, py); py = yPx(P.bps, d.v[i], blo, bhi); ctx.lineTo(x, py); }
       ctx.lineTo(P.left + P.w, py);
       ctx.stroke();
-      // The gate, over the deviation: where an open would have gone through
-      // (green) and where the deviation was there but the impulse said no
-      // (red). Each sample holds to the next, like the line it sits on.
-      if (d.gate && !state.hidden.has("gate:overlay")) {
-        ctx.lineWidth = 3.2;
-        for (const [state_, color] of [[1, GREEN], [-1, RED]]) {
-          ctx.strokeStyle = color; ctx.beginPath();
-          for (let i = i0; i <= i1; i++) {
-            if (d.gate[i] !== state_) continue;
-            const x0 = xPx(P, d.t[i], v), x1 = i + 1 <= i1 ? xPx(P, d.t[i + 1], v) : P.left + P.w;
-            const y = yPx(P.bps, d.v[i], blo, bhi);
-            ctx.moveTo(x0, y); ctx.lineTo(Math.max(x1, x0 + 1.5), y);
-          }
-          ctx.stroke();
-        }
-        ctx.lineWidth = 1.2;
-      }
     }
     // The leader's impulse on the same bps axis as the deviation, with the
     // gate's threshold dashed either side of zero: an open needed the
