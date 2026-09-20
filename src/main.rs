@@ -239,7 +239,7 @@ async fn params(State(app): State<Arc<App>>, Query(q): Query<ParamsQuery>) -> Ap
         ));
     };
     let mut out = serde_json::Map::new();
-    for block in ["taker", "ema", "send"] {
+    for block in ["taker", "momentum", "ema", "send"] {
         let mut merged = strategy["defaults"][block].clone();
         deep_merge(&mut merged, &override_[block]);
         if !merged.is_null() {
