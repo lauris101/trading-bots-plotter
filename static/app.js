@@ -550,16 +550,28 @@
       if (px < lo) lo = px; if (px > hi) hi = px;
     }
     const marks = Object.values(groups);
-    // Deviation: leader mid over lagger mid in bps, sampled at the lagger's quotes.
+    // Deviation: leader mid over lagger mid in bps, sampled at EVERY quote
+    // of either venue. The bot decides on every quote too, and an open
+    // fires on the leader's quote, in the instant its impulse is whole;
+    // sampled at the lagger's quotes alone (as this used to be), the gate
+    // was judged only where the impulse had already decayed and read
+    // refused where the bot had opened (ONDO 2026-09-20 10:31:10: 26 bps
+    // recorded, all red on the page).
     const leader = w.quotes.by_venue.binance_perps ?? w.quotes.by_venue.binance ?? [];
     const lagger = w.quotes.by_venue.hyperliquid ?? [];
     const dev = { t: [], v: [], basis: false };
-    let i = 0;
-    for (const q of lagger) {
-      while (i + 1 < leader.length && leader[i + 1].t <= q.t) i++;
-      if (!leader.length || leader[i].t > q.t) continue;
-      const lm = (leader[i].bid + leader[i].ask) / 2, hm = (q.bid + q.ask) / 2;
-      dev.t.push(q.t); dev.v.push(10000 * (lm / hm - 1));
+    {
+      let i = 0, j = 0, lm = null, hm = null;
+      while (i < leader.length || j < lagger.length) {
+        const takeLeader = j >= lagger.length || (i < leader.length && leader[i].t <= lagger[j].t);
+        let t;
+        if (takeLeader) { lm = (leader[i].bid + leader[i].ask) / 2; t = leader[i].t; i++; }
+        else { hm = (lagger[j].bid + lagger[j].ask) / 2; t = lagger[j].t; j++; }
+        if (lm == null || hm == null || !(hm > 0)) continue;
+        // One sample per instant: a later quote at the same time replaces it.
+        if (dev.t.length && dev.t[dev.t.length - 1] === t) { dev.v[dev.v.length - 1] = 10000 * (lm / hm - 1); continue; }
+        dev.t.push(t); dev.v.push(10000 * (lm / hm - 1));
+      }
     }
     // The bot's DEVIATION is the edge less its basis, the slow EMA of the
     // edge (taker.signal.basis_halftime_ms): a standing offset between the
