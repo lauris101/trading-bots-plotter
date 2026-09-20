@@ -155,7 +155,9 @@
       if (e.closed_pnl && Number(e.closed_pnl)) bits.push(`pnl ${e.closed_pnl}`);
       if (e.received_at) bits.push(`seen +${Math.max(0, Date.parse(e.received_at) - e.t)} ms`);
     }
-    if (e.kind === "sent" && e.slope && Number.isFinite(e.slope.bps_per_s)) {
+    // A slope the strategy could act on (the taker records one on every
+    // close even with its slope exit off; those stay in the hover only).
+    if (e.kind === "sent" && e.slope && e.slope.enabled !== false && Number.isFinite(e.slope.bps_per_s)) {
       bits.push(`slope ${e.slope.bps_per_s >= 0 ? "+" : ""}${e.slope.bps_per_s.toFixed(1)}${e.slope.verdict && e.slope.verdict !== "none" ? " " + e.slope.verdict : ""}`);
     }
     if (e.error) bits.push(e.error);
@@ -180,14 +182,29 @@
       return;
     }
     state.params = p.params ?? null;
-    const t = p.params?.taker ?? {};
     const set = (id, v) => { if (v != null && v !== "") $(id).value = String(v); };
-    const se = t.exit?.slope_exit ?? {};
-    set("slopefast", se.fast_ms); set("slopeslow", se.slow_ms);
-    if (se.source === "leader" || se.source === "lagger") $("slopesrc").value = se.source;
-    const en = t.entry ?? {};
-    set("impulsehl", en.leader_impulse_halftime_ms); set("impulsemin", en.leader_impulse_min_bps); set("impulsefrac", en.leader_impulse_fraction);
-    set("basishl", t.signal?.basis_halftime_ms);
+    const m = p.params?.momentum;
+    if (m) {
+      // A momentum key: its two EMAs ARE the slope; the taker's gate, impulse
+      // and basis mean nothing here and are switched off.
+      set("slopefast", m.signal?.fast_ms); set("slopeslow", m.signal?.slow_ms);
+      if (m.signal?.source === "leader" || m.signal?.source === "lagger") $("slopesrc").value = m.signal.source;
+      $("impulsehl").value = "0"; $("basishl").value = "0";
+    } else {
+      const t = p.params?.taker ?? {};
+      // The slope lines only when the taker's slope exit is on: off, the
+      // recorded reads are hover-only and the plot draws no slope.
+      const se = t.exit?.slope_exit ?? {};
+      if (se.enabled) {
+        set("slopefast", se.fast_ms); set("slopeslow", se.slow_ms);
+        if (se.source === "leader" || se.source === "lagger") $("slopesrc").value = se.source;
+      } else {
+        $("slopefast").value = "0"; $("slopeslow").value = "0";
+      }
+      const en = t.entry ?? {};
+      set("impulsehl", en.leader_impulse_halftime_ms); set("impulsemin", en.leader_impulse_min_bps); set("impulsefrac", en.leader_impulse_fraction);
+      set("basishl", t.signal?.basis_halftime_ms);
+    }
     $("paramsrc").textContent = `inputs: ${esc(p.strategy ?? "")} config v${p.version ?? "?"}`;
   }
 
@@ -996,6 +1013,9 @@
         if (state.hidden.has(m.id)) continue;
         for (const p of m.pts) {
           if (!String(p.k).startsWith("cross:") || p.t < v.x0 || p.t > v.x1) continue;
+          // Recorded but not acted on (a taker with its slope exit off):
+          // no tangent, the plot is not about it.
+          if (p.slope && p.slope.enabled === false) continue;
           const bps = slopeAt(w.slope, p);
           if (bps == null) continue;
           const favour = p.side === "sell" ? bps > 0 : bps < 0;
