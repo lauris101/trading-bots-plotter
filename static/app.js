@@ -139,9 +139,38 @@
     return bits.join("  ");
   };
 
+  // ---- the bot's parameters for the key ----
+  //
+  // The page's gate and slope inputs are seeded from the bot's CURRENT
+  // config for the key (control's stored document, defaults with the
+  // instrument's overrides), so a change made in the bot shows on the plot
+  // without retyping. Typed values stand until the next key change. Without
+  // CONTROL_URL on the server the inputs keep the page's own defaults.
+  async function loadParams() {
+    const bot = $("bot").value, inst = $("instrument").value;
+    if (!bot || !inst) return;
+    let p;
+    try {
+      p = await api(`/api/params?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}`);
+    } catch (e) {
+      $("paramsrc").textContent = `inputs: page defaults (${e.message})`;
+      return;
+    }
+    const t = p.params?.taker ?? {};
+    const set = (id, v) => { if (v != null && v !== "") $(id).value = String(v); };
+    const se = t.exit?.slope_exit ?? {};
+    set("slopefast", se.fast_ms); set("slopeslow", se.slow_ms);
+    if (se.source === "leader" || se.source === "lagger") $("slopesrc").value = se.source;
+    const en = t.entry ?? {};
+    set("impulsehl", en.leader_impulse_halftime_ms); set("impulsemin", en.leader_impulse_min_bps); set("impulsefrac", en.leader_impulse_fraction);
+    set("basishl", t.signal?.basis_halftime_ms);
+    $("paramsrc").textContent = `inputs: ${esc(p.strategy ?? "")} config v${p.version ?? "?"}`;
+  }
+
   async function loadEvents() {
     const bot = $("bot").value, inst = $("instrument").value, mode = $("mode").value;
     if (!bot || !inst) { $("events").querySelector("tbody").innerHTML = ""; state.events = []; return; }
+    await loadParams();
     const { events } = await api(`/api/events?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}&mode=${mode}&limit=600`);
     // Pairing reads forwards in time; the list reads newest first.
     pairAmends([...events].sort((a, b) => a.t - b.t || a.id - b.id));

@@ -70,6 +70,12 @@ Reaching Postgres from the container:
 ClickHouse is reached over HTTPS by hostname (`CLICKHOUSE_URL`), or through
 the host's forward at `http://host.docker.internal:18123`.
 
+`CONTROL_URL` (optional) is the control API (`https://app.example`). With it
+set, the page seeds its gate and slope inputs from the bot's current config
+for the chosen key (`/api/params`: the strategy's defaults with the
+instrument's overrides), so a change made in the bot shows on the plot.
+Without it the inputs keep the page's own defaults.
+
 ### Native
 
 ```bash

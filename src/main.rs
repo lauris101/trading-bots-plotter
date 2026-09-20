@@ -8,7 +8,8 @@
 //! venues underneath. Nothing is written anywhere.
 //!
 //! Environment (`.env` is read): PLOTTER_ADDR, DATABASE_URL, CLICKHOUSE_URL,
-//! CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_DB, RUST_LOG.
+//! CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_DB, CONTROL_URL (the
+//! control API, for the bot's current parameters; optional), RUST_LOG.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,6 +42,9 @@ struct App {
     ch_user: String,
     ch_password: String,
     ch_db: String,
+    /// The control API (`https://app.example`), for `/api/params`; `None`
+    /// leaves the page on its own defaults.
+    control_url: Option<String>,
 }
 
 type ApiResult = Result<Json<Value>, ApiError>;
@@ -87,6 +91,10 @@ async fn main() -> anyhow::Result<()> {
         ch_user: std::env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "trading-bots".to_owned()),
         ch_password: std::env::var("CLICKHOUSE_PASSWORD").unwrap_or_default(),
         ch_db: std::env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "trading_bots".to_owned()),
+        control_url: std::env::var("CONTROL_URL")
+            .ok()
+            .map(|u| u.trim_end_matches('/').to_owned())
+            .filter(|u| !u.is_empty()),
     };
     let router = Router::new()
         .route("/", get(|| async { Html(INDEX_HTML) }))
@@ -98,6 +106,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/orders", get(orders))
         .route("/api/events", get(events))
         .route("/api/window", get(window))
+        .route("/api/params", get(params))
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(90),
@@ -139,6 +148,93 @@ async fn bots(State(app): State<Arc<App>>) -> ApiResult {
         })
         .collect();
     Ok(Json(json!({ "keys": out })))
+}
+
+// ---- the bot's current parameters for one key -----------------------------
+
+#[derive(Deserialize)]
+struct ParamsQuery {
+    bot: String,
+    instrument: String,
+}
+
+/// The parameters the bot runs `instrument` with right now, from control's
+/// stored config: the strategy's `defaults` with the instrument's own
+/// overrides merged on top, per block (`taker`, `ema`, `send`). The page
+/// seeds its inputs from these, so a change in the bot's config shows on
+/// the plot without anyone retyping it. 404 without CONTROL_URL or when the
+/// bot does not trade the instrument.
+async fn params(State(app): State<Arc<App>>, Query(q): Query<ParamsQuery>) -> ApiResult {
+    let Some(control) = app.control_url.as_deref() else {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "CONTROL_URL is not set: the page keeps its own defaults".to_owned(),
+        ));
+    };
+    let resp = app
+        .http
+        .get(format!("{control}/bots/{}/config", q.bot))
+        .send()
+        .await
+        .map_err(|e| internal(format!("control unreachable at {control}: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            format!(
+                "control has no config for bot '{}' ({})",
+                q.bot,
+                resp.status()
+            ),
+        ));
+    }
+    let doc: Value = resp.json().await.map_err(internal)?;
+    let version = doc["version"].clone();
+    let strategies = doc["config"]["strategies"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let wanted = q.instrument.to_uppercase();
+    let Some((strategy, override_)) = strategies.iter().find_map(|s| {
+        s["instruments"]
+            .as_object()?
+            .iter()
+            .find(|(k, _)| k.to_uppercase() == wanted)
+            .map(|(_, v)| (s, v.clone()))
+    }) else {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            format!("bot '{}' has no strategy trading '{}'", q.bot, q.instrument),
+        ));
+    };
+    let mut out = serde_json::Map::new();
+    for block in ["taker", "ema", "send"] {
+        let mut merged = strategy["defaults"][block].clone();
+        deep_merge(&mut merged, &override_[block]);
+        if !merged.is_null() {
+            out.insert(block.to_owned(), merged);
+        }
+    }
+    Ok(Json(json!({
+        "bot": q.bot,
+        "instrument": q.instrument,
+        "strategy": strategy["name"],
+        "version": version,
+        "params": out,
+    })))
+}
+
+/// Objects merge key by key (the overlay's keys win), anything else is
+/// replaced by the overlay; a null overlay leaves the base alone.
+fn deep_merge(base: &mut Value, overlay: &Value) {
+    match (base, overlay) {
+        (_, Value::Null) => {}
+        (Value::Object(b), Value::Object(o)) => {
+            for (k, v) in o {
+                deep_merge(b.entry(k.clone()).or_insert(Value::Null), v);
+            }
+        }
+        (b, o) => *b = o.clone(),
+    }
 }
 
 // ---- the recent orders of one key, to pick a moment ------------------------
