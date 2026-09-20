@@ -77,14 +77,37 @@
     state.keys = keys;
     const bots = [...new Set(keys.map((k) => k.bot))];
     $("bot").innerHTML = bots.map((b) => `<option>${esc(b)}</option>`).join("");
+    fillStrategies();
     fillInstruments();
   }
-  function fillInstruments() {
+  /** The bot's strategies with orders in the day, the busiest most recently
+   *  first; the page opens on that one. An instrument traded by two
+   *  strategies (the master account and a subaccount) is listed under
+   *  each, so the pick also decides whose orders are shown. */
+  function fillStrategies() {
     const bot = $("bot").value;
     const mode = $("mode").value;
     const seen = new Map();
     for (const k of state.keys) {
       if (k.bot !== bot || (mode && k.mode !== mode)) continue;
+      const cur = seen.get(k.strategy) ?? { strategy: k.strategy, orders: 0, last_at: "" };
+      cur.orders += k.orders;
+      if (k.last_at > cur.last_at) cur.last_at = k.last_at;
+      seen.set(k.strategy, cur);
+    }
+    const list = [...seen.values()].sort((a, b) => (a.last_at < b.last_at ? 1 : a.last_at > b.last_at ? -1 : 0));
+    const prev = $("strategy").value;
+    $("strategy").innerHTML = list.map((s) => `<option value="${esc(s.strategy)}">${esc(s.strategy || "(none)")} (${s.orders})</option>`).join("");
+    if (list.some((s) => s.strategy === prev)) $("strategy").value = prev;
+  }
+  const strategyQuery = () => `&strategy=${encodeURIComponent($("strategy").value)}`;
+  function fillInstruments() {
+    const bot = $("bot").value;
+    const strategy = $("strategy").value;
+    const mode = $("mode").value;
+    const seen = new Map();
+    for (const k of state.keys) {
+      if (k.bot !== bot || k.strategy !== strategy || (mode && k.mode !== mode)) continue;
       const cur = seen.get(k.instrument);
       if (!cur || k.last_at > cur.last_at) seen.set(k.instrument, k);
     }
@@ -151,7 +174,7 @@
     if (!bot || !inst) return;
     let p;
     try {
-      p = await api(`/api/params?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}`);
+      p = await api(`/api/params?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}${strategyQuery()}`);
     } catch (e) {
       $("paramsrc").textContent = `inputs: page defaults (${e.message})`;
       return;
@@ -172,7 +195,7 @@
     const bot = $("bot").value, inst = $("instrument").value, mode = $("mode").value;
     if (!bot || !inst) { $("events").querySelector("tbody").innerHTML = ""; state.events = []; return; }
     await loadParams();
-    const { events } = await api(`/api/events?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}&mode=${mode}&limit=600`);
+    const { events } = await api(`/api/events?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}&mode=${mode}&limit=600${strategyQuery()}`);
     // Pairing reads forwards in time; the list reads newest first.
     pairAmends([...events].sort((a, b) => a.t - b.t || a.id - b.id));
     state.events = events;
@@ -404,13 +427,13 @@
     if (state.abort) state.abort.abort();
     const abort = new AbortController();
     state.abort = abort;
-    const key = `${bot}|${inst}|${mode}|${from}|${to}`;
+    const key = `${bot}|${$("strategy").value}|${inst}|${mode}|${from}|${to}`;
     let w = cachedWindow(key);
     if (!w) {
       status(range?.clamped ? "loading (range clamped to 6 h)" : "loading");
       setLoading(true);
       try {
-        w = await api(`/api/window?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}&mode=${mode}&from_ms=${from}&to_ms=${to}`, abort.signal);
+        w = await api(`/api/window?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}&mode=${mode}&from_ms=${from}&to_ms=${to}${strategyQuery()}`, abort.signal);
       } catch (e) {
         if (seq !== state.loadSeq) return; // superseded: the newer request reports
         setLoading(false);
@@ -1254,9 +1277,10 @@
   })();
 
   // ---- wiring ----
-  $("bot").onchange = async () => { fillInstruments(); await loadEvents(); jumpLatest(); };
+  $("bot").onchange = async () => { fillStrategies(); fillInstruments(); await loadEvents(); jumpLatest(); };
+  $("strategy").onchange = async () => { fillInstruments(); await loadEvents(); jumpLatest(); };
   $("instrument").onchange = async () => { await loadEvents(); jumpLatest(); };
-  $("mode").onchange = async () => { fillInstruments(); await loadEvents(); jumpLatest(); };
+  $("mode").onchange = async () => { fillStrategies(); fillInstruments(); await loadEvents(); jumpLatest(); };
   $("search").oninput = async () => {
     const before = $("instrument").value;
     fillInstruments();

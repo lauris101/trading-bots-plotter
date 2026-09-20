@@ -132,9 +132,10 @@ async fn main() -> anyhow::Result<()> {
 
 async fn bots(State(app): State<Arc<App>>) -> ApiResult {
     let rows = sqlx::query(
-        "select bot, instrument, mode, count(*) as orders, max(created_at) as last_at
+        "select bot, coalesce(strategy, '') as strategy, instrument, mode, count(*) as orders,
+                max(created_at) as last_at
          from bot_orders where instrument is not null and created_at > now() - interval '24 hours'
-         group by bot, instrument, mode order by max(created_at) desc",
+         group by bot, strategy, instrument, mode order by max(created_at) desc",
     )
     .fetch_all(&app.pool)
     .await
@@ -144,6 +145,9 @@ async fn bots(State(app): State<Arc<App>>) -> ApiResult {
         .map(|r| {
             json!({
                 "bot": r.get::<String, _>("bot"),
+                // The strategy entry the order came from; "" for an order
+                // recorded without one (a bare resting row).
+                "strategy": r.get::<String, _>("strategy"),
                 "instrument": r.get::<String, _>("instrument"),
                 "mode": r.get::<String, _>("mode"),
                 "orders": r.get::<i64, _>("orders"),
@@ -160,6 +164,10 @@ async fn bots(State(app): State<Arc<App>>) -> ApiResult {
 struct ParamsQuery {
     bot: String,
     instrument: String,
+    /// The strategy entry to read; without it, the first one that trades
+    /// the instrument (two can, in different accounts).
+    #[serde(default)]
+    strategy: Option<String>,
 }
 
 /// The parameters the bot runs `instrument` with right now, from control's
@@ -198,16 +206,36 @@ async fn params(State(app): State<Arc<App>>, Query(q): Query<ParamsQuery>) -> Ap
         .cloned()
         .unwrap_or_default();
     let wanted = q.instrument.to_uppercase();
-    let Some((strategy, override_)) = strategies.iter().find_map(|s| {
-        s["instruments"]
-            .as_object()?
-            .iter()
-            .find(|(k, _)| k.to_uppercase() == wanted)
-            .map(|(_, v)| (s, v.clone()))
-    }) else {
+    let wanted_strategy = q
+        .strategy
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_uppercase);
+    let Some((strategy, override_)) = strategies
+        .iter()
+        .filter(|s| {
+            wanted_strategy
+                .as_deref()
+                .is_none_or(|w| s["name"].as_str().is_some_and(|n| n.to_uppercase() == w))
+        })
+        .find_map(|s| {
+            s["instruments"]
+                .as_object()?
+                .iter()
+                .find(|(k, _)| k.to_uppercase() == wanted)
+                .map(|(_, v)| (s, v.clone()))
+        })
+    else {
         return Err(ApiError(
             StatusCode::NOT_FOUND,
-            format!("bot '{}' has no strategy trading '{}'", q.bot, q.instrument),
+            match &q.strategy {
+                Some(name) if !name.trim().is_empty() => format!(
+                    "bot '{}' has no strategy '{}' trading '{}'",
+                    q.bot, name, q.instrument
+                ),
+                _ => format!("bot '{}' has no strategy trading '{}'", q.bot, q.instrument),
+            },
         ));
     };
     let mut out = serde_json::Map::new();
@@ -247,6 +275,9 @@ fn deep_merge(base: &mut Value, overlay: &Value) {
 struct OrdersQuery {
     bot: String,
     instrument: String,
+    /// The strategy entry; empty or absent = every strategy of the bot.
+    #[serde(default)]
+    strategy: Option<String>,
     #[serde(default)]
     mode: Option<String>,
     #[serde(default)]
@@ -260,6 +291,7 @@ async fn orders(State(app): State<Arc<App>>, Query(q): Query<OrdersQuery>) -> Ap
                 coalesce(sent_at, created_at) as sent_at, done_at, trace::text as trace
          from bot_orders
          where bot = $1 and upper(instrument) = upper($2) and ($3::text is null or mode = $3)
+           and ($5::text is null or coalesce(strategy, '') = $5)
            and coalesce(sent_at, created_at) > now() - interval '24 hours'
          order by coalesce(sent_at, created_at) desc limit $4",
     )
@@ -267,6 +299,7 @@ async fn orders(State(app): State<Arc<App>>, Query(q): Query<OrdersQuery>) -> Ap
     .bind(&q.instrument)
     .bind(q.mode.as_deref().filter(|m| !m.is_empty()))
     .bind(q.limit.unwrap_or(200).clamp(1, 2_000))
+    .bind(q.strategy.as_deref())
     .fetch_all(&app.pool)
     .await
     .map_err(internal)?;
@@ -321,12 +354,14 @@ async fn events(State(app): State<Arc<App>>, Query(q): Query<OrdersQuery>) -> Ap
          where e.bot = $1 and upper(o.instrument) = upper($2)
            and e.at > now() - interval '24 hours'
            and ($3::text is null or o.mode = $3)
+           and ($5::text is null or coalesce(o.strategy, '') = $5)
          order by e.at desc, e.id desc limit $4",
     )
     .bind(&q.bot)
     .bind(&q.instrument)
     .bind(q.mode.as_deref().filter(|m| !m.is_empty()))
     .bind(q.limit.unwrap_or(600).clamp(1, 5_000))
+    .bind(q.strategy.as_deref())
     .fetch_all(&app.pool)
     .await
     .map_err(internal)?;
@@ -379,6 +414,9 @@ struct WindowQuery {
     to_ms: i64,
     #[serde(default)]
     mode: Option<String>,
+    /// The strategy entry; empty or absent = every strategy of the bot.
+    #[serde(default)]
+    strategy: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -434,12 +472,14 @@ async fn conditions_for(
          from bot_events
          where bot = $1 and instrument is not null and upper(instrument) = upper($2)
            and at >= $3 and at <= $4
+           and ($5::text is null or coalesce(strategy, '') = $5)
          order by id",
     )
     .bind(&q.bot)
     .bind(&q.instrument)
     .bind(from)
     .bind(to)
+    .bind(q.strategy.as_deref())
     .fetch_all(&app.pool)
     .await
     .map_err(internal)?;
@@ -556,6 +596,7 @@ async fn events_for(
          where e.bot = $1 and upper(o.instrument) = upper($2)
            and e.at >= $3 and e.at <= $4
            and ($5::text is null or o.mode = $5)
+           and ($6::text is null or coalesce(o.strategy, '') = $6)
          order by e.id",
     )
     .bind(&q.bot)
@@ -563,6 +604,7 @@ async fn events_for(
     .bind(from)
     .bind(to)
     .bind(q.mode.as_deref().filter(|m| !m.is_empty()))
+    .bind(q.strategy.as_deref())
     .fetch_all(&app.pool)
     .await
     .map_err(internal)?;
