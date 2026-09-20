@@ -524,13 +524,30 @@
     // Deviation: leader mid over lagger mid in bps, sampled at the lagger's quotes.
     const leader = w.quotes.by_venue.binance_perps ?? w.quotes.by_venue.binance ?? [];
     const lagger = w.quotes.by_venue.hyperliquid ?? [];
-    const dev = { t: [], v: [] };
+    const dev = { t: [], v: [], basis: false };
     let i = 0;
     for (const q of lagger) {
       while (i + 1 < leader.length && leader[i + 1].t <= q.t) i++;
       if (!leader.length || leader[i].t > q.t) continue;
       const lm = (leader[i].bid + leader[i].ask) / 2, hm = (q.bid + q.ask) / 2;
       dev.t.push(q.t); dev.v.push(10000 * (lm / hm - 1));
+    }
+    // The bot's DEVIATION is the edge less its basis, the slow EMA of the
+    // edge (taker.signal.basis_halftime_ms): a standing offset between the
+    // venues is not a signal. With a half-life set, the pane shows that,
+    // as the bot sees it; 0 shows the raw edge.
+    const basisHl = Number($("basishl").value);
+    if (basisHl > 0 && dev.t.length) {
+      let est = dev.v[0], held = dev.v[0], ts = dev.t[0];
+      for (let k = 0; k < dev.t.length; k++) {
+        if (k > 0) {
+          const dt = Math.max(0, dev.t[k] - ts);
+          est += (held - est) * (1 - Math.pow(0.5, dt / basisHl));
+          held = dev.v[k]; ts = Math.max(ts, dev.t[k]);
+        }
+        dev.v[k] -= est;
+      }
+      dev.basis = true;
     }
     // The impulse gate's reading (taker.entry.leader_impulse_*): at every
     // leader quote, how far the new mid stands from the EMA of the mids
@@ -541,8 +558,10 @@
     // A jump shows whole; a drift shows as rate x tau, small.
     const impulseHl = Number($("impulsehl").value), impulseMin = Number($("impulsemin").value);
     let impulse = null;
+    const impulseFrac = Number($("impulsefrac").value);
     if (impulseHl > 0 && leader.length) {
       const t = new Float64Array(leader.length), v = new Float64Array(leader.length);
+      const ema = new Float64Array(leader.length), heldAt = new Float64Array(leader.length);
       let est = 0, held = 0, ts = 0;
       leader.forEach((r, i) => {
         const mid = (r.bid + r.ask) / 2;
@@ -553,12 +572,41 @@
           v[i] = est > 0 ? 10000 * (mid / est - 1) : 0;
           held = mid; ts = Math.max(ts, r.t);
         }
-        t[i] = r.t;
+        t[i] = r.t; ema[i] = est; heldAt[i] = held;
       });
-      impulse = { t, v, hl: impulseHl, min: impulseMin };
+      // The reading at ANY instant: the estimate as of the last quote,
+      // moved toward the held mid by the time since, and the held mid over
+      // it. Between quotes the impulse decays; this is that decay.
+      const at = (when) => {
+        let k = lowerBound(t, when);
+        if (k >= t.length || t[k] > when) k--;
+        if (k < 0) return 0;
+        const dt = Math.max(0, when - t[k]);
+        const value = ema[k] + (heldAt[k] - ema[k]) * (1 - Math.pow(0.5, dt / impulseHl));
+        return value > 0 ? 10000 * (heldAt[k] / value - 1) : 0;
+      };
+      impulse = { t, v, hl: impulseHl, min: impulseMin, frac: impulseFrac, at };
+      // The leader's EMA itself, on the price pane: the level the impulse
+      // is measured from.
+      lines.push({ id: "binance:ema", name: `binance mid ema ${impulseHl} ms (impulse)`, color: "#8fb8ff", width: 1.5, dash: [8, 3], t, v: ema });
     }
     const last = [...w.events].reverse().find((e) => e.decision?.threshold_bps != null);
     const threshold = last ? last.decision.threshold_bps : null;
+    // Where the gate would have let an open through: the deviation past the
+    // threshold AND the impulse, at that instant and the deviation's way,
+    // at least max(min, fraction x |deviation|). +1 open, -1 refused by the
+    // impulse, 0 nothing to open. (The threshold is the last decision's in
+    // the window; rho, the half spread and the holds are not modelled.)
+    if (impulse && threshold != null) {
+      dev.gate = new Int8Array(dev.t.length);
+      for (let k = 0; k < dev.t.length; k++) {
+        const dv = dev.v[k];
+        if (Math.abs(dv) <= threshold) continue;
+        const gap = impulse.at(dev.t[k]) * Math.sign(dv);
+        const needed = Math.max(impulse.min, impulse.frac * Math.abs(dv));
+        dev.gate[k] = gap >= needed ? 1 : -1;
+      }
+    }
     const pad = Number.isFinite(lo) && hi > lo ? (hi - lo) * 0.06 : Math.abs(lo || 1) * 0.001;
     const full = { x0: from, x1: to, y0: Number.isFinite(lo) ? lo - pad : 0, y1: Number.isFinite(hi) ? hi + pad : 1 };
     // Time-anchored, not price-anchored: a hold has no price, and what it
@@ -592,7 +640,10 @@
           ]
         : []),
       ...(state.win.impulse
-        ? [{ id: "leader:impulse", name: `leader impulse ${state.win.impulse.hl} ms (bps${state.win.impulse.min > 0 ? `, gate ${state.win.impulse.min}` : ""})`, color: IMPULSE_COLOR, kind: "line" }]
+        ? [
+            { id: "leader:impulse", name: `leader impulse ${state.win.impulse.hl} ms (bps${state.win.impulse.min > 0 ? `, gate ${state.win.impulse.min}` : ""})`, color: IMPULSE_COLOR, kind: "line" },
+            ...(state.win.dev.gate ? [{ id: "gate:overlay", name: "gate on the deviation: green would open, red refused by the impulse", color: GREEN, kind: "line" }] : []),
+          ]
         : []),
     ];
     el.innerHTML = items.map((it) => `<button class="lg${state.hidden.has(it.id) ? " off" : ""}" data-id="${esc(it.id)}"><canvas width="22" height="14"></canvas>${esc(it.name)}</button>`).join("")
@@ -880,6 +931,23 @@
       for (let i = i0 + 1; i <= i1; i++) { const x = xPx(P, d.t[i], v); ctx.lineTo(x, py); py = yPx(P.bps, d.v[i], blo, bhi); ctx.lineTo(x, py); }
       ctx.lineTo(P.left + P.w, py);
       ctx.stroke();
+      // The gate, over the deviation: where an open would have gone through
+      // (green) and where the deviation was there but the impulse said no
+      // (red). Each sample holds to the next, like the line it sits on.
+      if (d.gate && !state.hidden.has("gate:overlay")) {
+        ctx.lineWidth = 3.2;
+        for (const [state_, color] of [[1, GREEN], [-1, RED]]) {
+          ctx.strokeStyle = color; ctx.beginPath();
+          for (let i = i0; i <= i1; i++) {
+            if (d.gate[i] !== state_) continue;
+            const x0 = xPx(P, d.t[i], v), x1 = i + 1 <= i1 ? xPx(P, d.t[i + 1], v) : P.left + P.w;
+            const y = yPx(P.bps, d.v[i], blo, bhi);
+            ctx.moveTo(x0, y); ctx.lineTo(Math.max(x1, x0 + 1.5), y);
+          }
+          ctx.stroke();
+        }
+        ctx.lineWidth = 1.2;
+      }
     }
     // The leader's impulse on the same bps axis as the deviation, with the
     // gate's threshold dashed either side of zero: an open needed the
@@ -930,7 +998,7 @@
       }
     }
     ctx.save(); ctx.translate(14, P.bps.top + P.bps.h / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillStyle = "#8b98a9";
-    ctx.fillText(w.threshold != null ? `leader over lagger, bps (dashed: threshold ${w.threshold.toFixed(1)})` : "leader over lagger, bps", 0, 0); ctx.restore();
+    ctx.fillText(`${w.dev.basis ? "deviation (leader over lagger, less basis)" : "leader over lagger"}, bps${w.threshold != null ? ` (dashed: threshold ${w.threshold.toFixed(1)})` : ""}`, 0, 0); ctx.restore();
 
     // ---- rubber band ----
     if (state.drag && state.drag.moved) {
@@ -1107,6 +1175,8 @@
   $("slopesrc").onchange = rebuildDerived;
   $("impulsehl").onchange = rebuildDerived;
   $("impulsemin").onchange = rebuildDerived;
+  $("impulsefrac").onchange = rebuildDerived;
+  $("basishl").onchange = rebuildDerived;
   $("centre").onchange = () => { const t = parseCentre($("centre").value); if (t != null) { state.selected = null; setCentre(t); } };
   // An explicit range shifts by half ITS length and stays explicit; the
   // centre + window pair keeps its old behaviour.
