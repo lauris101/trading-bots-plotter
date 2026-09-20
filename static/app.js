@@ -563,10 +563,8 @@
     // floored at entry.taker_offset_bps), as the order record has it -- plus
     // both legs' fees and the priority fee the open carried (its `p` is a
     // rate of notional in 1e-8). Drawn from the open to the cycle's last
-    // event; exit.closing_rung_offset_bps, when set, is the ladder's floor
-    // above it. Needs the bot's fees, so only with the config loaded.
+    // event. Needs the bot's fees, so only with the config loaded.
     const feesBps = Number(state.params?.taker?.fees?.fees_bps);
-    const rungOffset = Number(state.params?.taker?.exit?.closing_rung_offset_bps) || 0;
     const breakevens = [];
     if (Number.isFinite(feesBps)) {
       for (const e of w.events) {
@@ -580,7 +578,6 @@
         breakevens.push({
           cloid: e.cloid, side: e.side, t0: e.t, t1, limit,
           y: limit * (1 + dir * be),
-          floor: rungOffset > 0 ? limit * (1 + dir * (be + rungOffset / 10000)) : null,
           costBps: be * 10000,
         });
       }
@@ -924,22 +921,19 @@
     }
     // Break-even of each open attempt: a dashed level from the open to the
     // cycle's end, on the side the close must reach (above a buy, below a
-    // sell); the ladder's floor beside it when an offset lifts it.
+    // sell).
     if (w.breakevens?.length && !state.hidden.has("breakeven")) {
       ctx.font = "10px ui-monospace, monospace"; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
       for (const b of w.breakevens) {
         if (b.t1 < v.x0 || b.t0 > v.x1) continue;
         const x0 = Math.max(P.left, xPx(P, b.t0, v)), x1 = Math.min(P.left + P.w, xPx(P, b.t1, v));
-        for (const [level, label, dash] of [[b.y, "break-even", [6, 3]], [b.floor, "rung floor", [2, 3]]]) {
-          if (level == null) continue;
-          const y = yPx(P.price, level, v.y0, v.y1);
-          if (y < P.price.top - 12 || y > P.price.top + P.price.h + 12) continue;
-          ctx.strokeStyle = BREAKEVEN_COLOR; ctx.lineWidth = 1.2; ctx.setLineDash(dash); ctx.globalAlpha = 0.9;
-          ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
-          ctx.setLineDash([]); ctx.globalAlpha = 1;
-          ctx.fillStyle = BREAKEVEN_COLOR;
-          ctx.fillText(`${label} ${level.toPrecision(6)}`, x0 + 3, y - 2);
-        }
+        const y = yPx(P.price, b.y, v.y0, v.y1);
+        if (y < P.price.top - 12 || y > P.price.top + P.price.h + 12) continue;
+        ctx.strokeStyle = BREAKEVEN_COLOR; ctx.lineWidth = 1.2; ctx.setLineDash([6, 3]); ctx.globalAlpha = 0.9;
+        ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+        ctx.setLineDash([]); ctx.globalAlpha = 1;
+        ctx.fillStyle = BREAKEVEN_COLOR;
+        ctx.fillText(`break-even ${b.y.toPrecision(6)}`, x0 + 3, y - 2);
       }
       ctx.textBaseline = "middle";
     }
