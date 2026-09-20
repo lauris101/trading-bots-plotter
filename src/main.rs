@@ -28,6 +28,8 @@ use sqlx::postgres::PgPoolOptions;
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const APP_JS: &str = include_str!("../static/app.js");
+const LIVE_HTML: &str = include_str!("../static/live.html");
+const LIVE_JS: &str = include_str!("../static/live.js");
 
 /// Quotes returned per venue per window, at most; beyond this the window is
 /// bucketed and the last quote of each bucket kept (a step line looks the
@@ -102,6 +104,12 @@ async fn main() -> anyhow::Result<()> {
             "/app.js",
             get(|| async { ([(header::CONTENT_TYPE, "application/javascript")], APP_JS) }),
         )
+        .route("/live", get(|| async { Html(LIVE_HTML) }))
+        .route(
+            "/live.js",
+            get(|| async { ([(header::CONTENT_TYPE, "application/javascript")], LIVE_JS) }),
+        )
+        .route("/api/live/setup", get(live_setup))
         .route("/api/bots", get(bots))
         .route("/api/orders", get(orders))
         .route("/api/events", get(events))
@@ -156,6 +164,94 @@ async fn bots(State(app): State<Arc<App>>) -> ApiResult {
         })
         .collect();
     Ok(Json(json!({ "keys": out })))
+}
+
+// ---- the live page's choices --------------------------------------------------
+//
+// The addresses to listen to (every account of every bot control knows: the
+// master and each subaccount) and the instruments with both venues' symbols,
+// from control's stored configs. The page opens its own sockets to the
+// venues; this only tells it what to ask for.
+
+async fn live_setup(State(app): State<Arc<App>>) -> ApiResult {
+    let Some(control) = app.control_url.as_deref() else {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "CONTROL_URL is not set: the live page needs control for the addresses and symbols"
+                .to_owned(),
+        ));
+    };
+    let bots: Value = app
+        .http
+        .get(format!("{control}/bots"))
+        .send()
+        .await
+        .map_err(|e| internal(format!("control unreachable at {control}: {e}")))?
+        .json()
+        .await
+        .map_err(internal)?;
+    let list = bots
+        .as_array()
+        .cloned()
+        .or_else(|| bots["bots"].as_array().cloned())
+        .unwrap_or_default();
+    let mut accounts = Vec::new();
+    let mut instruments: std::collections::BTreeMap<String, Value> =
+        std::collections::BTreeMap::new();
+    for bot in &list {
+        let Some(name) = bot["name"].as_str() else {
+            continue;
+        };
+        for account in bot["status"]["accounts"].as_array().into_iter().flatten() {
+            if let Some(address) = account["address"].as_str() {
+                accounts.push(json!({
+                    "bot": name,
+                    "label": account["label"],
+                    "address": address,
+                    "strategies": account["strategies"],
+                }));
+            }
+        }
+        let Ok(resp) = app
+            .http
+            .get(format!("{control}/bots/{name}/config"))
+            .send()
+            .await
+        else {
+            continue;
+        };
+        let Ok(doc) = resp.json::<Value>().await else {
+            continue;
+        };
+        let symbols = &doc["symbols"];
+        for strategy in doc["config"]["strategies"].as_array().into_iter().flatten() {
+            for canonical in strategy["instruments"]
+                .as_object()
+                .map(|m| m.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+            {
+                let binance = symbols["binance_perps"][&canonical]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("{}USDT", canonical.to_uppercase()));
+                let hl = symbols["hyperliquid"][&canonical]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| canonical.clone());
+                instruments.entry(canonical.clone()).or_insert(json!({
+                    "canonical": canonical,
+                    "binance": binance,
+                    "hl": hl,
+                    "bot": name,
+                    "strategy": strategy["name"],
+                }));
+            }
+        }
+    }
+    Ok(Json(json!({
+        "accounts": accounts,
+        "instruments": instruments.values().collect::<Vec<_>>(),
+    })))
 }
 
 // ---- the bot's current parameters for one key -----------------------------

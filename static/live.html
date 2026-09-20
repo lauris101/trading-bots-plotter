@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>trading-bots live</title>
+<style>
+  :root { --bg:#0b0e13; --panel:#131922; --panel2:#1a2230; --line:#273140; --text:#dde4ec; --muted:#8b98a9; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --amber:#d29922; --mono: ui-monospace, Menlo, Consolas, monospace; }
+  * { box-sizing: border-box; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--text); font:13px/1.45 system-ui, sans-serif; display:flex; flex-direction:column; overflow:hidden; }
+  .top { flex:none; display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; padding:10px 14px; border-bottom:1px solid var(--line); background:var(--panel); }
+  h1 { font-size:14px; margin:0 8px 4px 0; color:var(--muted); font-weight:600; }
+  label.f { display:flex; flex-direction:column; gap:2px; font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+  select, input, button { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:5px 8px; font:13px system-ui, sans-serif; }
+  .mono { font-family: var(--mono); }
+  .meta { color:var(--muted); font-size:12px; }
+  a.meta { text-decoration:none; } a.meta:hover { color:var(--accent); }
+  .main { flex:1; display:grid; grid-template-columns: 1fr 380px; min-height:0; }
+  #plotwrap { position:relative; min-width:0; min-height:0; }
+  canvas { display:block; width:100%; height:100%; }
+  .side { border-left:1px solid var(--line); overflow:auto; min-height:0; }
+  .side table { width:100%; border-collapse:collapse; font-size:12px; }
+  .side th, .side td { padding:3px 6px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+  .side th { position:sticky; top:0; background:var(--panel); color:var(--muted); font-weight:600; font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+  .buy { color:var(--green); } .sell { color:var(--red); }
+  .legend { flex:none; display:flex; gap:14px; align-items:center; flex-wrap:wrap; padding:6px 14px; color:var(--muted); font-size:11px; border-top:1px solid var(--line); }
+  .sw { display:inline-block; width:14px; height:3px; vertical-align:middle; margin-right:5px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; vertical-align:middle; margin-right:5px; }
+  .tri { display:inline-block; width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-bottom:9px solid var(--amber); vertical-align:middle; margin-right:5px; }
+  #status.bad { color:var(--red); }
+  .pill { display:inline-block; padding:1px 6px; border-radius:10px; border:1px solid var(--line); font-size:11px; color:var(--muted); }
+  .pill.on { color:var(--green); border-color:var(--green); }
+  .pill.off { color:var(--red); border-color:var(--red); }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>trading-bots live</h1>
+  <a href="/" class="meta" style="align-self:center">history</a>
+  <label class="f">address <select id="address"></select></label>
+  <label class="f">instrument <select id="instrument"></select></label>
+  <label class="f">window <select id="span">
+    <option value="60000">1 min</option><option value="180000" selected>3 min</option><option value="600000">10 min</option><option value="1800000">30 min</option>
+  </select></label>
+  <label class="f">show <select id="mode"><option value="mid" selected>mids</option><option value="touch">bid / ask</option></select></label>
+  <span class="meta" style="align-self:center">
+    <span id="s-binance" class="pill">binance</span>
+    <span id="s-hlbbo" class="pill">hl bbo</span>
+    <span id="s-hluser" class="pill">hl orders+fills</span>
+  </span>
+  <span id="status" class="meta" style="align-self:center; margin-left:auto"></span>
+</div>
+<div class="main">
+  <div id="plotwrap"><canvas id="cv"></canvas></div>
+  <div class="side">
+    <table id="log"><thead><tr><th>time</th><th>what</th><th>side</th><th>px</th><th>sz</th><th>note</th></tr></thead><tbody></tbody></table>
+  </div>
+</div>
+<div class="legend">
+  <span><i class="sw" style="background:#58a6ff"></i>binance (leader)</span>
+  <span><i class="sw" style="background:#dde4ec"></i>hyperliquid (lagger)</span>
+  <span><i class="tri"></i>order resting (at its limit; hollow while open, crossed when cancelled)</span>
+  <span><i class="dot" style="background:var(--green)"></i>buy fill</span>
+  <span><i class="dot" style="background:var(--red)"></i>sell fill</span>
+  <span class="meta">quotes and orders come straight from the venues' websockets; nothing here is stored</span>
+</div>
+<script src="/live.js"></script>
+</body>
+</html>
