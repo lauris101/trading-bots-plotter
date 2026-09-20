@@ -125,11 +125,15 @@ async fn main() -> anyhow::Result<()> {
 }
 
 // ---- bots and instruments that have orders --------------------------------
+//
+// Everything the page lists is bounded to the last 24 hours: the quotes
+// table keeps one day (its TTL), so an older event has nothing to be drawn
+// against, and a key with no order in the day has nothing to show.
 
 async fn bots(State(app): State<Arc<App>>) -> ApiResult {
     let rows = sqlx::query(
         "select bot, instrument, mode, count(*) as orders, max(created_at) as last_at
-         from bot_orders where instrument is not null
+         from bot_orders where instrument is not null and created_at > now() - interval '24 hours'
          group by bot, instrument, mode order by max(created_at) desc",
     )
     .fetch_all(&app.pool)
@@ -256,6 +260,7 @@ async fn orders(State(app): State<Arc<App>>, Query(q): Query<OrdersQuery>) -> Ap
                 coalesce(sent_at, created_at) as sent_at, done_at, trace::text as trace
          from bot_orders
          where bot = $1 and upper(instrument) = upper($2) and ($3::text is null or mode = $3)
+           and coalesce(sent_at, created_at) > now() - interval '24 hours'
          order by coalesce(sent_at, created_at) desc limit $4",
     )
     .bind(&q.bot)
@@ -314,6 +319,7 @@ async fn events(State(app): State<Arc<App>>, Query(q): Query<OrdersQuery>) -> Ap
                 e.oid, e.fill_id, e.fee::text as fee, e.closed_pnl::text as closed_pnl, e.source, o.mode
          from bot_order_events e join bot_orders o on o.cloid = e.cloid
          where e.bot = $1 and upper(o.instrument) = upper($2)
+           and e.at > now() - interval '24 hours'
            and ($3::text is null or o.mode = $3)
          order by e.at desc, e.id desc limit $4",
     )
