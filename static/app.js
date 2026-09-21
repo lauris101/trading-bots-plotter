@@ -135,6 +135,8 @@
   const eventLabel = (e) => {
     // Named for what the order IS, as the legend already does: "rung" and
     // "cross" are the code's ladder vocabulary and mean nothing to a reader.
+    if (e.kind === "sent" && e.reduce_only && e.reason === "stop") return "venue stop";
+    if (e.kind === "sent" && e.reduce_only && e.reason === "trail") return "venue trail";
     if (e.kind === "sent") return !e.reduce_only ? "open IOC" : e.tif === "ioc" ? "close IOC" : `close ${String(e.tif ?? "").toUpperCase()}`;
     if (e.kind === "acked") return e.status ?? "acked";
     if (e.kind === "cancelled") return `cancel ${e.status ?? "ok"}`;
