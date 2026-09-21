@@ -193,7 +193,9 @@
       if (m.signal?.source === "leader" || m.signal?.source === "lagger") $("slopesrc").value = m.signal.source;
       $("impulsehl").value = "0"; $("basishl").value = "0";
     } else {
-      const t = p.params?.taker ?? {};
+      // A taker-trail key reads the same signal, entry and basis settings
+      // from its own block; it has no slope exit.
+      const t = p.params?.taker ?? p.params?.taker_trail ?? {};
       // The slope lines only when the taker's slope exit is on: off, the
       // recorded reads are hover-only and the plot draws no slope.
       const se = t.exit?.slope_exit ?? {};
@@ -373,9 +375,10 @@
     if (e.error) lines.push(`<span style="color:#f85149">${esc(e.error)}</span>`);
     lines.push(`cloid ${esc(e.cloid)}${e.batch != null ? `  batch ${e.batch}` : ""}${e.mode ? `  ${esc(e.mode)}` : ""}${e.oid ? `  oid ${esc(e.oid)}` : ""}`);
     if (e.parent_cloid) lines.push(`closes open ${esc(shortCloid(e.parent_cloid))}`);
-    if (e.kind === "sent" && !e.reduce_only && state.params?.taker?.fees) {
+    const feeBlock = state.params?.taker ?? state.params?.taker_trail;
+    if (e.kind === "sent" && !e.reduce_only && feeBlock?.fees) {
       const limit = Number(e.px ?? e.order_px), dir = e.side === "buy" ? 1 : -1;
-      const be = (2 * Number(state.params.taker.fees.fees_bps)) / 10000 + (Number(e.priority) || 0) / 1e8;
+      const be = (2 * Number(feeBlock.fees.fees_bps)) / 10000 + (Number(e.priority) || 0) / 1e8;
       if (Number.isFinite(limit) && Number.isFinite(be)) lines.push(`<b>break-even</b> ${(limit * (1 + dir * be)).toPrecision(6)}: worst fill ${esc(String(limit))} (the limit) + ${(be * 10000).toFixed(1)} bps of costs`);
     }
     const d = e.decision;
@@ -606,7 +609,7 @@
     // both legs' fees and the priority fee the open carried (its `p` is a
     // rate of notional in 1e-8). Drawn from the open to the cycle's last
     // event. Needs the bot's fees, so only with the config loaded.
-    const feesBps = Number(state.params?.taker?.fees?.fees_bps);
+    const feesBps = Number((state.params?.taker ?? state.params?.taker_trail)?.fees?.fees_bps);
     const breakevens = [];
     if (Number.isFinite(feesBps)) {
       for (const e of w.events) {
