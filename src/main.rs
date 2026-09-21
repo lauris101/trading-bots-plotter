@@ -687,7 +687,8 @@ async fn events_for(
                 e.px::text as px, e.sz::text as sz, o.px::text as order_px, o.sz::text as order_sz,
                 o.status as order_status, o.avg_px::text as order_avg_px, o.filled_sz::text as order_filled,
                 e.oid, e.fill_id, e.fee::text as fee, e.closed_pnl::text as closed_pnl, e.source,
-                o.mode, o.trace -> 'decision' as decision, o.trace -> 'slope' as slope
+                o.mode, o.trace -> 'decision' as decision, o.trace -> 'slope' as slope,
+                o.trace -> 'protection' as protection
          from bot_order_events e join bot_orders o on o.cloid = e.cloid
          where e.bot = $1 and upper(o.instrument) = upper($2)
            and e.at >= $3 and e.at <= $4
@@ -735,6 +736,7 @@ async fn events_for(
                 "mode": r.get::<String, _>("mode"),
                 "decision": r.get::<Option<Value>, _>("decision"),
                 "slope": r.get::<Option<Value>, _>("slope"),
+                "protection": r.get::<Option<Value>, _>("protection"),
             })
         })
         .collect();

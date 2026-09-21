@@ -162,6 +162,9 @@
     if (e.kind === "sent" && e.slope && e.slope.enabled !== false && Number.isFinite(e.slope.bps_per_s)) {
       bits.push(`slope ${e.slope.bps_per_s >= 0 ? "+" : ""}${e.slope.bps_per_s.toFixed(1)}${e.slope.verdict && e.slope.verdict !== "none" ? " " + e.slope.verdict : ""}`);
     }
+    const p = e.kind === "sent" ? e.protection : null;
+    if (p?.kind === "stop") bits.push(`trigger ${fmtPx(p.trigger_px)} (${p.distance_bps} bps from entry ${fmtPx(p.entry_px)})`);
+    if (p?.kind === "trail") bits.push(`arms at ${fmtPx(p.activation_px)} (${Number(p.distance_bps).toFixed(1)} bps from entry), retrace ${p.retrace_bps} bps`);
     if (e.error) bits.push(e.error);
     return bits.join("  ");
   };
@@ -308,10 +311,16 @@
     "cancelled:ok": ["x", 6, true, "cancelled"],
     "cancelled:failed": ["circle-x", 9, true, "cancel FAILED"],
     "left_resting": ["hexagon", 8, false, "left resting"],
+    // The trail exit's venue-side pair, drawn where the venue fires them:
+    // the stop at its trigger, the trail at its activation.
+    "venue:stop": ["hexagon", 9, true, "venue stop-market, at its trigger"],
+    "venue:trail": ["hexagon", 9, false, "venue trailing stop, at its activation"],
     // Nothing is dropped for want of a shape.
     "other": ["diamond", 7, false, "event"],
   };
   const keyOf = (e) => {
+    if (e.kind === "sent" && e.reduce_only && e.reason === "stop") return "venue:stop";
+    if (e.kind === "sent" && e.reduce_only && e.reason === "trail") return "venue:trail";
     if (e.kind === "sent") {
       // A resting close is a rung whatever it rests as (ALO or GTC); only
       // an IOC close is the escalation's cross.
@@ -334,6 +343,14 @@
   const priceOf = (e) => {
     const n = (v) => (v == null || v === "" ? null : Number(v));
     if (e.kind === "acked" && e.status === "filled") return n(e.px) ?? n(e.order_avg_px) ?? n(e.order_px);
+    // A protective order sits where the venue fires it. Records before the
+    // levels were kept have a stop at its wire price, the cap ten percent
+    // past the trigger: shown where it was recorded, nothing better known.
+    if (e.kind === "sent" && e.protection) {
+      const p = e.protection;
+      const level = p.kind === "stop" ? p.trigger_px : p.activation_px;
+      if (Number.isFinite(level)) return level;
+    }
     // Every event plots where IT happened: an insert at the price it was
     // sent at, an amend at the price it moved to, a fill at the fill. The
     // order's own price is only the fallback - an amend rewrites it, and an
@@ -342,6 +359,9 @@
   };
   // Price times size, as money: what a line of the tooltip is actually
   // worth. Blank when either is missing rather than a misleading 0.
+  // A price as the venue quotes it: up to 6 significant digits, no
+  // exponent, no trailing zeros.
+  const fmtPx = (v) => (Number.isFinite(Number(v)) && v != null ? String(Number(Number(v).toPrecision(6))) : "-");
   const usd = (px, sz) => {
     const n = Number(px) * Number(sz);
     return Number.isFinite(n) && px != null && sz != null && px !== "" && sz !== "" ? `  = $${n.toFixed(2)}` : "";
@@ -372,6 +392,17 @@
       lines.push(`slope emas fast ${f(s.fast, 6)} slow ${f(s.slow, 6)} mid ${f(s.mid, 6)}`);
     }
     if (e.kind === "acked" && e.status === "filled") lines.push(`filled ${esc(e.sz)} @ ${esc(e.px)}${usd(e.px, e.sz)}`);
+    const p = e.kind === "sent" ? e.protection : null;
+    if (p?.kind === "stop") {
+      // The loss cap as the venue holds it: fires on its mark price at the
+      // trigger, as a market order capped at the wire price.
+      lines.push(`<b>venue stop</b> trigger ${fmtPx(p.trigger_px)}: ${Number(p.distance_bps).toFixed(1)} bps against entry ${fmtPx(p.entry_px)}`);
+      lines.push(`fires a market order capped at ${fmtPx(p.cap_px)} (10% past the trigger); break-even ${Number(p.break_even_bps).toFixed(1)} bps`);
+    }
+    if (p?.kind === "trail") {
+      lines.push(`<b>venue trail</b> arms at ${fmtPx(p.activation_px)}: ${Number(p.distance_bps).toFixed(1)} bps in favour of entry ${fmtPx(p.entry_px)} (break-even ${Number(p.break_even_bps).toFixed(1)} + offset ${p.activation_offset_bps} bps)`);
+      lines.push(`then follows the best mark and fires when it retraces ${p.retrace_bps} bps; a fired trail nets at least ${(Number(p.activation_offset_bps) - Number(p.retrace_bps)).toFixed(1)} bps`);
+    }
     if (e.error) lines.push(`<span style="color:#f85149">${esc(e.error)}</span>`);
     lines.push(`cloid ${esc(e.cloid)}${e.batch != null ? `  batch ${e.batch}` : ""}${e.mode ? `  ${esc(e.mode)}` : ""}${e.oid ? `  oid ${esc(e.oid)}` : ""}`);
     if (e.parent_cloid) lines.push(`closes open ${esc(shortCloid(e.parent_cloid))}`);
@@ -397,6 +428,7 @@
   const SLOPE_COLOR = "#ff9f43";
   const IMPULSE_COLOR = "#c084fc";
   const BREAKEVEN_COLOR = "#f2cc60";
+  const PROTECTION_COLOR = "#f0883e";
   const VENUE = {
     binance_perps: { width: 1, color: "#3d7bd6", label: "binance" },
     binance: { width: 1, color: "#5aa0ff", label: "binance spot" },
@@ -627,6 +659,48 @@
         });
       }
     }
+    // The trail exit's levels: each stop at its trigger and each trail at
+    // its activation, from the send to the order's end (its cancel, its
+    // fill, or the cycle's last event). An armed trail's trigger lives on
+    // the venue and moves with its mark; it is REBUILT here from the
+    // lagger's mid -- best mid since the activation was crossed, plus the
+    // retrace -- so the plot shows roughly where the venue would have
+    // fired. The venue's mark is not the mid, so this is a reading, not
+    // the record.
+    const protections = [];
+    {
+      const hl = w.quotes.by_venue.hyperliquid ?? [];
+      for (const e of w.events) {
+        if (e.kind !== "sent" || !e.protection || !e.side) continue;
+        const p = e.protection;
+        const level = p.kind === "stop" ? Number(p.trigger_px) : Number(p.activation_px);
+        if (!Number.isFinite(level) || level <= 0) continue;
+        const own = w.events.filter((x) => x.cloid === e.cloid && x.t > e.t && (x.kind === "cancelled" || x.kind === "fill" || (x.kind === "acked" && (x.status === "filled" || x.status === "rejected"))));
+        const cycle = w.events.filter((x) => x.parent_cloid && x.parent_cloid === e.parent_cloid);
+        const t1 = own.length ? Math.min(...own.map((x) => x.t)) : Math.max(e.t + 500, ...cycle.map((x) => x.t));
+        const item = { cloid: e.cloid, kind: p.kind, side: e.side, t0: e.t, t1, y: level, p, trail: null };
+        if (p.kind === "trail" && Number.isFinite(Number(p.retrace_bps))) {
+          // A buy closes a short: the trail arms when the mid is AT OR
+          // BELOW the activation, trails the lowest mid and fires when
+          // the mid is `retrace` above it. A sell closes a long: mirror.
+          const buy = e.side === "buy", r = Number(p.retrace_bps) / 10000;
+          const t = [], v = [];
+          let best = null;
+          for (const q of hl) {
+            if (q.t < e.t) continue;
+            if (q.t > t1) break;
+            const mid = (q.bid + q.ask) / 2;
+            if (best == null) {
+              if (buy ? mid <= level : mid >= level) best = mid; else continue;
+            } else best = buy ? Math.min(best, mid) : Math.max(best, mid);
+            const trig = buy ? best * (1 + r) : best * (1 - r);
+            if (t.length && t[t.length - 1] === q.t) v[v.length - 1] = trig; else { t.push(q.t); v.push(trig); }
+          }
+          if (t.length) item.trail = { t, v, armedAt: t[0] };
+        }
+        protections.push(item);
+      }
+    }
     // Deviation: leader mid over lagger mid in bps, sampled at EVERY quote
     // of either venue. The bot decides on every quote too, and an open
     // fires on the leader's quote, in the instant its impulse is whole;
@@ -732,7 +806,7 @@
     const conditions = (w.conditions ?? [])
       .filter((c) => CONDITION[c.kind])
       .map((c) => ({ t: c.t, kind: c.kind, details: c.details ?? {} }));
-    return { inst, lines, marks, dev, threshold, full, conditions, slope, impulse, breakevens };
+    return { inst, lines, marks, dev, threshold, full, conditions, slope, impulse, breakevens, protections };
   }
 
   /** The conditions worth a rule on the chart, and how they are drawn. A
@@ -759,6 +833,12 @@
         : []),
       ...(state.win.breakevens?.length
         ? [{ id: "breakeven", name: "break-even of each open (worst fill + costs)", color: BREAKEVEN_COLOR, kind: "dash" }]
+        : []),
+      ...(state.win.protections?.length
+        ? [
+            { id: "protection", name: "venue stop trigger and trail activation, sent to the order's end", color: PROTECTION_COLOR, kind: "dash" },
+            ...(state.win.protections.some((x) => x.trail) ? [{ id: "protection:trail", name: "armed trail's trigger, rebuilt from the lagger's mid (best + retrace)", color: PROTECTION_COLOR, kind: "line" }] : []),
+          ]
         : []),
       ...(state.win.impulse
         ? [
@@ -979,6 +1059,50 @@
         ctx.setLineDash([]); ctx.globalAlpha = 1;
         ctx.fillStyle = BREAKEVEN_COLOR;
         ctx.fillText(`break-even ${b.y.toPrecision(6)}`, x0 + 3, y - 2);
+      }
+      ctx.textBaseline = "middle";
+    }
+    // The trail exit's levels: the stop's trigger and the trail's
+    // activation as dashed levels over the order's life, the armed trail's
+    // rebuilt trigger as a step line from the moment the mid crossed the
+    // activation.
+    if (w.protections?.length) {
+      ctx.font = "10px ui-monospace, monospace"; ctx.textAlign = "left";
+      for (const b of w.protections) {
+        if (b.t1 < v.x0 || b.t0 > v.x1) continue;
+        if (!state.hidden.has("protection")) {
+          const x0 = Math.max(P.left, xPx(P, b.t0, v)), x1 = Math.min(P.left + P.w, xPx(P, b.t1, v));
+          const y = yPx(P.price, b.y, v.y0, v.y1);
+          if (y >= P.price.top - 12 && y <= P.price.top + P.price.h + 12) {
+            ctx.strokeStyle = PROTECTION_COLOR; ctx.lineWidth = 1.2; ctx.setLineDash(b.kind === "stop" ? [2, 3] : [6, 3]); ctx.globalAlpha = 0.9;
+            ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+            ctx.setLineDash([]); ctx.globalAlpha = 1;
+            ctx.fillStyle = PROTECTION_COLOR; ctx.textBaseline = b.kind === "stop" ? (b.side === "buy" ? "bottom" : "top") : (b.side === "buy" ? "top" : "bottom");
+            const label = b.kind === "stop"
+              ? `stop ${fmtPx(b.y)} (${Number(b.p.distance_bps).toFixed(0)} bps)`
+              : `trail arms ${fmtPx(b.y)} (${Number(b.p.distance_bps).toFixed(0)} bps, retrace ${b.p.retrace_bps})${b.trail ? "" : " - never armed here"}`;
+            ctx.fillText(label, x0 + 3, y + (ctx.textBaseline === "bottom" ? -2 : 2));
+          }
+        }
+        if (b.trail && !state.hidden.has("protection:trail")) {
+          const l = b.trail;
+          let i0 = lowerBound(l.t, v.x0); if (i0 > 0) i0--;
+          const i1 = Math.min(l.t.length - 1, lowerBound(l.t, v.x1));
+          if (i0 <= i1) {
+            ctx.strokeStyle = PROTECTION_COLOR; ctx.lineWidth = 1.6; ctx.setLineDash([]);
+            ctx.beginPath();
+            let px = xPx(P, l.t[i0], v), py = yPx(P.price, l.v[i0], v.y0, v.y1);
+            ctx.moveTo(px, py);
+            for (let i = i0 + 1; i <= i1; i++) {
+              const nx = xPx(P, l.t[i], v), ny = yPx(P.price, l.v[i], v.y0, v.y1);
+              if (nx - px >= 0.5 || Math.abs(ny - py) >= 0.5) { ctx.lineTo(nx, py); ctx.lineTo(nx, ny); px = nx; py = ny; }
+            }
+            ctx.lineTo(Math.min(P.left + P.w, xPx(P, b.t1, v)), py);
+            ctx.stroke();
+            ctx.fillStyle = PROTECTION_COLOR; ctx.textBaseline = "bottom";
+            ctx.fillText(`trail armed ${fmtMs(l.armedAt)}`, Math.max(P.left, xPx(P, l.armedAt, v)) + 3, yPx(P.price, l.v[0], v.y0, v.y1) - 2);
+          }
+        }
       }
       ctx.textBaseline = "middle";
     }
