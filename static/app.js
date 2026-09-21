@@ -11,6 +11,11 @@
     win: null,          // the built window: lines, marks, deviation, full range
     view: null,         // {x0, x1, y0, y1} in ms and price
     hidden: new Set(),  // series ids toggled off in the legend
+    // Series hidden until the reader turns them on: the venue stop sits far
+    // from the price (its trigger 50 bps off, and records before 2026-09-21
+    // have its wire price, the cap 10 percent past that) and would squash
+    // the price pane. Applied once per id, so a toggle sticks.
+    seen: new Set(),
     drag: null, hoverPt: null, pinned: null, hoverCloid: null, hoverEvent: null, selectedEvent: null, keepZoom: null, raf: 0,
     firstFill: true,
     loadSeq: 0,         // the newest window request; older answers are dropped
@@ -629,9 +634,16 @@
       if (px == null || !Number.isFinite(px)) continue;
       const id = `${e.side ?? "none"}|${k}`;
       const [symbol, size, solid, label] = KIND[k];
+      if (!state.seen.has(id)) {
+        state.seen.add(id);
+        if (k === "venue:stop") state.hidden.add(id);
+      }
       (groups[id] ??= { id, name: `${e.side ?? ""} ${label}`.trim(), color: sideColor(e), symbol, size, solid, pts: [] })
         .pts.push({ t: e.t, y: px, text: hover(e), cloid: e.cloid, id: e.id, k, side: e.side, slope: e.slope ?? null });
-      if (px < lo) lo = px; if (px > hi) hi = px;
+      // The price pane is fitted to what the market did: the venue stop's
+      // level (and, in old records, its cap) stays out of the fit and is
+      // reached by panning when turned on.
+      if (k !== "venue:stop") { if (px < lo) lo = px; if (px > hi) hi = px; }
     }
     const marks = Object.values(groups);
     // The break-even of every open attempt: the price the close must clear
@@ -668,6 +680,7 @@
     // fired. The venue's mark is not the mid, so this is a reading, not
     // the record.
     const protections = [];
+    if (!state.seen.has("protection:stop")) { state.seen.add("protection:stop"); state.hidden.add("protection:stop"); }
     {
       const hl = w.quotes.by_venue.hyperliquid ?? [];
       for (const e of w.events) {
@@ -836,7 +849,8 @@
         : []),
       ...(state.win.protections?.length
         ? [
-            { id: "protection", name: "venue stop trigger and trail activation, sent to the order's end", color: PROTECTION_COLOR, kind: "dash" },
+            ...(state.win.protections.some((x) => x.kind === "stop") ? [{ id: "protection:stop", name: "venue stop trigger, sent to the order's end (off by default: far from the price)", color: PROTECTION_COLOR, kind: "dash" }] : []),
+            ...(state.win.protections.some((x) => x.kind === "trail") ? [{ id: "protection", name: "venue trail activation, sent to the order's end", color: PROTECTION_COLOR, kind: "dash" }] : []),
             ...(state.win.protections.some((x) => x.trail) ? [{ id: "protection:trail", name: "armed trail's trigger, rebuilt from the lagger's mid (best + retrace)", color: PROTECTION_COLOR, kind: "line" }] : []),
           ]
         : []),
@@ -1070,7 +1084,7 @@
       ctx.font = "10px ui-monospace, monospace"; ctx.textAlign = "left";
       for (const b of w.protections) {
         if (b.t1 < v.x0 || b.t0 > v.x1) continue;
-        if (!state.hidden.has("protection")) {
+        if (!state.hidden.has(b.kind === "stop" ? "protection:stop" : "protection")) {
           const x0 = Math.max(P.left, xPx(P, b.t0, v)), x1 = Math.min(P.left + P.w, xPx(P, b.t1, v));
           const y = yPx(P.price, b.y, v.y0, v.y1);
           if (y >= P.price.top - 12 && y <= P.price.top + P.price.h + 12) {
