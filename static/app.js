@@ -406,7 +406,7 @@
     if (e.error) lines.push(`<span style="color:#f85149">${esc(e.error)}</span>`);
     lines.push(`cloid ${esc(e.cloid)}${e.batch != null ? `  batch ${e.batch}` : ""}${e.mode ? `  ${esc(e.mode)}` : ""}${e.oid ? `  oid ${esc(e.oid)}` : ""}`);
     if (e.parent_cloid) lines.push(`closes open ${esc(shortCloid(e.parent_cloid))}`);
-    const feeBlock = state.params?.taker ?? state.params?.taker_trail;
+    const feeBlock = state.params?.taker ?? state.params?.taker_trail ?? state.params?.momentum;
     if (e.kind === "sent" && !e.reduce_only && feeBlock?.fees) {
       const limit = Number(e.px ?? e.order_px), dir = e.side === "buy" ? 1 : -1;
       const be = (2 * Number(feeBlock.fees.fees_bps)) / 10000 + (Number(e.priority) || 0) / 1e8;
@@ -641,7 +641,7 @@
     // both legs' fees and the priority fee the open carried (its `p` is a
     // rate of notional in 1e-8). Drawn from the open to the cycle's last
     // event. Needs the bot's fees, so only with the config loaded.
-    const feesBps = Number((state.params?.taker ?? state.params?.taker_trail)?.fees?.fees_bps);
+    const feesBps = Number((state.params?.taker ?? state.params?.taker_trail ?? state.params?.momentum)?.fees?.fees_bps);
     const breakevens = [];
     if (Number.isFinite(feesBps)) {
       for (const e of w.events) {
