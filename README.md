@@ -114,3 +114,17 @@ static/app.js      the plot
 `/api/window?bot=&instrument=&from_ms=&to_ms=&mode=` returns the quotes of
 every venue in the window plus the events, joined to their orders. At most
 six hours per window.
+
+## Competitor overlay
+
+The `competitor` picker lists the Hyperliquid addresses control's wallet
+collector records (panel: Scraper, "Hyperliquid accounts"; tables
+`hl_watched_addresses`, `hl_order_events`, `hl_fills`). With one picked,
+the window also loads that address's order status events and fills on the
+instrument (`GET /api/competitor?address&instrument&from_ms&to_ms`, matched
+by every Hyperliquid coin name the instrument model maps the canonical to)
+and draws them in their own colours (cyan buys, purple sells): a hollow
+square where an order was placed, a solid square where it filled, a cross
+where it was cancelled, each at the order's limit price, and dots at the
+fills. Orders stay out of the price-axis fit; fills are in it. Hover for
+size, status, oid and the venue's realised pnl.

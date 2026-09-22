@@ -114,6 +114,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/orders", get(orders))
         .route("/api/events", get(events))
         .route("/api/window", get(window))
+        .route("/api/watched", get(watched))
+        .route("/api/competitor", get(competitor))
         .route("/api/params", get(params))
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -252,6 +254,148 @@ async fn live_setup(State(app): State<Arc<App>>) -> ApiResult {
         "accounts": accounts,
         "instruments": instruments.values().collect::<Vec<_>>(),
     })))
+}
+
+// ---- other addresses' orders and fills (the wallet collector's tables) ----
+//
+// Control's collector records `orderUpdates` and `userFills` of any
+// Hyperliquid address into `hl_order_events` / `hl_fills`. The page overlays
+// one such address on the plot as a competitor: where its orders rested and
+// where it filled, against the same quotes.
+
+/// The addresses the collector knows, for the page's picker.
+async fn watched(State(app): State<Arc<App>>) -> ApiResult {
+    let rows = sqlx::query(
+        "select w.address, w.label, w.enabled, w.is_own,
+                (select max(fill_ts) from hl_fills f where f.address = w.address) as last_fill_at
+         from hl_watched_addresses w order by w.created_at",
+    )
+    .fetch_all(&app.pool)
+    .await
+    .map_err(internal)?;
+    let out: Vec<Value> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "address": r.get::<String, _>("address"),
+                "label": r.get::<Option<String>, _>("label"),
+                "enabled": r.get::<bool, _>("enabled"),
+                "is_own": r.get::<bool, _>("is_own"),
+                "last_fill_at": r.get::<Option<DateTime<Utc>>, _>("last_fill_at"),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "addresses": out })))
+}
+
+#[derive(Deserialize)]
+struct CompetitorQuery {
+    address: String,
+    instrument: String,
+    from_ms: i64,
+    to_ms: i64,
+}
+
+/// One address's order status events and fills on one instrument in a
+/// window. The instrument is matched by its Hyperliquid coin names from the
+/// instrument model (every Hyperliquid symbology), and by the canonical
+/// itself when no mapping exists.
+async fn competitor(State(app): State<Arc<App>>, Query(q): Query<CompetitorQuery>) -> ApiResult {
+    let address = q.address.trim().to_lowercase();
+    let Some(from) = Utc.timestamp_millis_opt(q.from_ms).single() else {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "bad from_ms".to_owned()));
+    };
+    let Some(to) = Utc.timestamp_millis_opt(q.to_ms).single() else {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "bad to_ms".to_owned()));
+    };
+    if to <= from || (to - from) > chrono::Duration::hours(6) {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "a window is at most 6 hours and must end after it starts".to_owned(),
+        ));
+    }
+    let mut coins: Vec<String> = sqlx::query_scalar(
+        "select distinct s.symbol from instrument_symbols s
+         join instruments i on i.id = s.instrument_id
+         join symbologies g on g.id = s.symbology_id
+         where upper(i.symbol) = upper($1) and g.venue = 'Hyperliquid'
+           and (s.valid_to is null or s.valid_to > now())",
+    )
+    .bind(&q.instrument)
+    .fetch_all(&app.pool)
+    .await
+    .map_err(internal)?;
+    if !coins.iter().any(|c| c == &q.instrument) {
+        coins.push(q.instrument.clone());
+    }
+    let orders = sqlx::query(
+        "select oid, cloid, side, limit_px::text as limit_px, sz::text as sz, orig_sz::text as orig_sz,
+                reduce_only, status, order_ts, status_ts
+         from hl_order_events
+         where address = $1 and coin = any($2) and status_ts >= $3 and status_ts <= $4
+         order by status_ts, id",
+    )
+    .bind(&address)
+    .bind(&coins)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&app.pool)
+    .await
+    .map_err(internal)?;
+    let fills = sqlx::query(
+        "select tid, oid, side, px::text as px, sz::text as sz, fill_ts, dir, closed_pnl::text as closed_pnl,
+                crossed, fee::text as fee
+         from hl_fills
+         where address = $1 and coin = any($2) and fill_ts >= $3 and fill_ts <= $4
+         order by fill_ts, id",
+    )
+    .bind(&address)
+    .bind(&coins)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&app.pool)
+    .await
+    .map_err(internal)?;
+    let side = |s: &str| match s {
+        "B" => "buy",
+        "A" => "sell",
+        _ => "none",
+    };
+    let orders: Vec<Value> = orders
+        .iter()
+        .map(|r| {
+            json!({
+                "oid": r.get::<i64, _>("oid"),
+                "cloid": r.get::<Option<String>, _>("cloid"),
+                "side": side(&r.get::<String, _>("side")),
+                "limit_px": r.get::<Option<String>, _>("limit_px"),
+                "sz": r.get::<String, _>("sz"),
+                "orig_sz": r.get::<String, _>("orig_sz"),
+                "reduce_only": r.get::<Option<bool>, _>("reduce_only"),
+                "status": r.get::<String, _>("status"),
+                "order_t": r.get::<DateTime<Utc>, _>("order_ts").timestamp_millis(),
+                "t": r.get::<DateTime<Utc>, _>("status_ts").timestamp_millis(),
+            })
+        })
+        .collect();
+    let fills: Vec<Value> = fills
+        .iter()
+        .map(|r| {
+            json!({
+                "tid": r.get::<i64, _>("tid"),
+                "oid": r.get::<i64, _>("oid"),
+                "side": side(&r.get::<String, _>("side")),
+                "px": r.get::<String, _>("px"),
+                "sz": r.get::<String, _>("sz"),
+                "t": r.get::<DateTime<Utc>, _>("fill_ts").timestamp_millis(),
+                "dir": r.get::<Option<String>, _>("dir"),
+                "closed_pnl": r.get::<Option<String>, _>("closed_pnl"),
+                "crossed": r.get::<Option<bool>, _>("crossed"),
+                "fee": r.get::<Option<String>, _>("fee"),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "address": address, "coins": coins, "orders": orders, "fills": fills })))
 }
 
 // ---- the bot's current parameters for one key -----------------------------

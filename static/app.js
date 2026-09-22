@@ -18,6 +18,7 @@
     seen: new Set(),
     drag: null, hoverPt: null, pinned: null, hoverCloid: null, hoverEvent: null, selectedEvent: null, keepZoom: null, raf: 0,
     firstFill: true,
+    watched: [],        // the collector's addresses, for the competitor picker
     loadSeq: 0,         // the newest window request; older answers are dropped
     abort: null,        // the in-flight window request, cancelled by the next
   };
@@ -75,6 +76,23 @@
    *  pointer says so too. Cleared when the window that was asked for last
    *  has arrived (or failed), never by an older one. */
   const setLoading = (on) => { $("plotwrap").classList.toggle("loading", on); };
+
+  // ---- the competitor picker: the collector's addresses ----
+  async function loadWatched() {
+    try {
+      const { addresses } = await api("/api/watched");
+      state.watched = addresses;
+    } catch { state.watched = []; }
+    const prev = $("competitor").value;
+    $("competitor").innerHTML = `<option value="">none</option>` + state.watched
+      .map((a) => `<option value="${esc(a.address)}">${esc(a.label || "")} ${esc(a.address.slice(0, 8))}..${esc(a.address.slice(-4))}${a.enabled ? "" : " (not recording)"}</option>`)
+      .join("");
+    if (state.watched.some((a) => a.address === prev)) $("competitor").value = prev;
+  }
+  const competitorLabel = (address) => {
+    const a = state.watched.find((x) => x.address === address);
+    return a?.label ? a.label : `${address.slice(0, 8)}..${address.slice(-4)}`;
+  };
 
   // ---- keys ----
   async function loadKeys() {
@@ -289,6 +307,8 @@
   // are crosses. Acks that merely confirm a resting or filled state draw
   // nothing of their own: the insert's marker already carries the outcome.
   const GREEN = "#3fb950", RED = "#f85149", OTHER = "#c9d1d9";
+  // A competitor's marks: never the side colours ours use.
+  const COMP_BUY = "#39c5cf", COMP_SELL = "#d2a8ff";
   const sideColor = (e) => (e.side === "buy" ? GREEN : e.side === "sell" ? RED : OTHER);
   const filled = (e) => e.order_status === "filled" || Number(e.order_filled) > 0;
   // kind key -> [symbol, size px, solid, label]
@@ -486,13 +506,19 @@
     if (state.abort) state.abort.abort();
     const abort = new AbortController();
     state.abort = abort;
-    const key = `${bot}|${$("strategy").value}|${inst}|${mode}|${from}|${to}`;
+    const competitor = $("competitor").value;
+    const key = `${bot}|${$("strategy").value}|${inst}|${mode}|${from}|${to}|${competitor}`;
     let w = cachedWindow(key);
     if (!w) {
       status(range?.clamped ? "loading (range clamped to 6 h)" : "loading");
       setLoading(true);
       try {
         w = await api(`/api/window?bot=${encodeURIComponent(bot)}&instrument=${encodeURIComponent(inst)}&mode=${mode}&from_ms=${from}&to_ms=${to}${strategyQuery()}`, abort.signal);
+        // The competitor's orders and fills on the same window, when one
+        // is picked: a second request, both cached under the one key.
+        w.competitor = competitor
+          ? await api(`/api/competitor?address=${encodeURIComponent(competitor)}&instrument=${encodeURIComponent(inst)}&from_ms=${from}&to_ms=${to}`, abort.signal)
+          : null;
       } catch (e) {
         if (seq !== state.loadSeq) return; // superseded: the newer request reports
         setLoading(false);
@@ -522,7 +548,8 @@
     tip.classList.remove("pinned");
     renderLegend();
     const nq = state.win.lines.reduce((a, l) => a + (l.id.endsWith(":bid") ? l.t.length : 0), 0);
-    status(`${nq} quotes, ${w.events.length} events, ${(w.conditions ?? []).length} conditions, ${fmt(from).slice(11, 19)} to ${fmt(to).slice(11, 19)} UTC${w.quotes.bucketed_ms ? `, bucketed to ${w.quotes.bucketed_ms} ms` : ""}`);
+    const comp = w.competitor ? `, competitor ${w.competitor.orders.length} order events / ${w.competitor.fills.length} fills` : "";
+    status(`${nq} quotes, ${w.events.length} events, ${(w.conditions ?? []).length} conditions${comp}, ${fmt(from).slice(11, 19)} to ${fmt(to).slice(11, 19)} UTC${w.quotes.bucketed_ms ? `, bucketed to ${w.quotes.bucketed_ms} ms` : ""}`);
     requestDraw();
   }
 
@@ -644,6 +671,47 @@
       // level (and, in old records, its cap) stays out of the fit and is
       // reached by panning when turned on.
       if (k !== "venue:stop") { if (px < lo) lo = px; if (px > hi) hi = px; }
+    }
+    // ---- the competitor's orders and fills ----
+    // Another address, recorded by control's wallet collector: its order
+    // status events (placed, filled, cancelled) at their limit price and
+    // its fills at the fill price, in its own colours so they never read as
+    // ours. Orders stay out of the price fit (a resting order far from the
+    // touch would squash the pane); fills are in it.
+    if (w.competitor) {
+      const who = competitorLabel(w.competitor.address);
+      const cg = {};
+      const push = (id, name, symbol, size, solid, color, pt) => {
+        (cg[id] ??= { id, name, color, symbol, size, solid, pts: [] }).pts.push(pt);
+      };
+      const ccolor = (side) => (side === "buy" ? COMP_BUY : side === "sell" ? COMP_SELL : OTHER);
+      for (const o of w.competitor.orders) {
+        const px = Number(o.limit_px);
+        if (!Number.isFinite(px) || px <= 0) continue;
+        const st = String(o.status);
+        const kind = st === "open" ? "open" : st === "filled" ? "filled" : "cancelled";
+        const text = [
+          `<b>${esc(who)}: order ${esc(st)}</b>  ${fmtMs(o.t)} UTC`,
+          `${esc(o.side)} ${o.reduce_only ? "reduce-only " : ""}limit ${esc(o.limit_px)}  sz ${esc(o.sz)} of ${esc(o.orig_sz)}${usd(o.limit_px, o.orig_sz)}`,
+          `placed ${fmtMs(o.order_t)}  oid ${esc(o.oid)}${o.cloid ? `  cloid ${esc(o.cloid)}` : ""}`,
+        ].join("<br>");
+        const [symbol, size, solid, label] = kind === "open"
+          ? ["square", 7, false, "order placed (resting)"]
+          : kind === "filled" ? ["square", 7, true, "order filled"] : ["x", 6, false, "order cancelled"];
+        push(`${o.side}|comp:${kind}`, `${who}: ${o.side} ${label}`, symbol, size, solid, ccolor(o.side), { t: o.t, y: px, text, cloid: `oid:${o.oid}`, id: `co${o.oid}:${o.t}`, k: `comp:${kind}`, side: o.side, slope: null });
+      }
+      for (const f of w.competitor.fills) {
+        const px = Number(f.px);
+        if (!Number.isFinite(px) || px <= 0) continue;
+        const text = [
+          `<b>${esc(who)}: fill</b>  ${fmtMs(f.t)} UTC (venue time)`,
+          `${esc(f.side)} ${esc(f.px)} x ${esc(f.sz)}${usd(f.px, f.sz)}  ${esc(f.dir ?? "")}${f.crossed != null ? (f.crossed ? "  taker" : "  maker") : ""}`,
+          `${f.closed_pnl && Number(f.closed_pnl) ? `closed pnl ${esc(f.closed_pnl)}  ` : ""}${f.fee ? `fee ${esc(f.fee)}  ` : ""}oid ${esc(f.oid)}  tid ${esc(f.tid)}`,
+        ].join("<br>");
+        push(`${f.side}|comp:fill`, `${who}: ${f.side} fill`, "circle", 5, true, ccolor(f.side), { t: f.t, y: px, text, cloid: `oid:${f.oid}`, id: `cf${f.tid}`, k: "comp:fill", side: f.side, slope: null });
+        if (px < lo) lo = px; if (px > hi) hi = px;
+      }
+      for (const g of Object.values(cg)) groups[g.id] = g;
     }
     const marks = Object.values(groups);
     // The break-even of every open attempt: the price the close must clear
@@ -1444,6 +1512,7 @@
   $("strategy").onchange = async () => { fillInstruments(); await loadEvents(); jumpLatest(); };
   $("instrument").onchange = async () => { await loadEvents(); jumpLatest(); };
   $("mode").onchange = async () => { fillStrategies(); fillInstruments(); await loadEvents(); jumpLatest(); };
+  $("competitor").onchange = () => void load();
   $("search").oninput = async () => {
     const before = $("instrument").value;
     fillInstruments();
@@ -1495,7 +1564,8 @@
   }
   $("latest").onclick = jumpLatest;
   // Reload means "ask the databases again": the remembered windows go too.
-  $("reload").onclick = async () => { windowCache.clear(); await loadKeys(); await loadEvents(); void load(); };
+  $("reload").onclick = async () => { windowCache.clear(); await loadKeys();
+    await loadWatched(); await loadEvents(); void load(); };
   function jumpLatest() {
     const e = state.events[0];
     if (e) { state.selected = e.cloid; state.selectedEvent = e.id; setCentre(e.t); }
