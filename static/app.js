@@ -953,7 +953,18 @@
   // Room on the right for the slope's own axis in the lower pane.
   const M = { l: 74, r: 54, t: 10, b: 30, gap: 26 };
   let W = 0, H = 0; // css pixels
+  // The lower (bps) pane is a switch, off by default: the price pane then
+  // takes the whole height and nothing of the lower pane is drawn or hit.
+  const showBps = () => $("bpspane").checked;
   function panes() {
+    if (!showBps()) {
+      const ph = Math.max(50, H - M.t - M.b);
+      return {
+        price: { top: M.t, h: ph },
+        bps: { top: M.t + ph, h: 0 },
+        left: M.l, w: Math.max(10, W - M.l - M.r),
+      };
+    }
     const inner = H - M.t - M.b - M.gap;
     const ph = Math.max(50, inner * 0.7);
     return {
@@ -1083,12 +1094,14 @@
     ctx.textBaseline = "middle";
 
     // panes' background and grid
-    for (const pane of [P.price, P.bps]) { ctx.fillStyle = "#0f141b"; ctx.fillRect(P.left, pane.top, P.w, pane.h); }
+    for (const pane of showBps() ? [P.price, P.bps] : [P.price]) { ctx.fillStyle = "#0f141b"; ctx.fillRect(P.left, pane.top, P.w, pane.h); }
     const xt = timeTicks(v, P.w);
     ctx.strokeStyle = "#1f2733"; ctx.lineWidth = 1;
     for (const tk of xt) {
       const x = Math.round(xPx(P, tk.t, v)) + 0.5;
-      ctx.beginPath(); ctx.moveTo(x, P.price.top); ctx.lineTo(x, P.price.top + P.price.h); ctx.moveTo(x, P.bps.top); ctx.lineTo(x, P.bps.top + P.bps.h); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, P.price.top); ctx.lineTo(x, P.price.top + P.price.h);
+      if (showBps()) { ctx.moveTo(x, P.bps.top); ctx.lineTo(x, P.bps.top + P.bps.h); }
+      ctx.stroke();
     }
     ctx.fillStyle = "#8b98a9"; ctx.textAlign = "center";
     for (const tk of xt) ctx.fillText(tk.label, xPx(P, tk.t, v), H - M.b / 2);
@@ -1264,6 +1277,7 @@
     ctx.restore();
     ctx.save(); ctx.translate(14, P.price.top + P.price.h / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillStyle = "#8b98a9"; ctx.fillText(w.inst, 0, 0); ctx.restore();
 
+    if (showBps()) {
     // ---- bps pane: autoscaled to what is visible ----
     let blo = -1, bhi = 1;
     const d = w.dev;
@@ -1357,6 +1371,7 @@
     }
     ctx.save(); ctx.translate(14, P.bps.top + P.bps.h / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillStyle = "#8b98a9";
     ctx.fillText(`${w.dev.basis ? "deviation (leader over lagger, less basis)" : "leader over lagger"}, bps${w.threshold != null ? ` (dashed: threshold ${w.threshold.toFixed(1)})` : ""}`, 0, 0); ctx.restore();
+    }
 
     // ---- rubber band ----
     if (state.drag && state.drag.moved) {
@@ -1519,6 +1534,7 @@
     if ($("instrument").value !== before) { await loadEvents(); jumpLatest(); }
   };
   $("span").onchange = () => void load();
+  $("bpspane").onchange = () => requestDraw();
   // A derived line only: rebuild from the window already fetched, and keep
   // the zoom -- changing the half-life is looking harder at the same place.
   const rebuildDerived = () => {
