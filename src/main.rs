@@ -314,11 +314,16 @@ async fn competitor(State(app): State<Arc<App>>, Query(q): Query<CompetitorQuery
             "a window is at most 6 hours and must end after it starts".to_owned(),
         ));
     }
+    // The venue's own spelling of each mapping: the main dex's symbol as
+    // is, a builder dex's as `<dex>:<symbol>` from the symbology code.
     let mut coins: Vec<String> = sqlx::query_scalar(
-        "select distinct s.symbol from instrument_symbols s
+        "select distinct case when g.code = 'Hyperliquid' then s.symbol
+                              else lower(substr(g.code, 13)) || ':' || s.symbol end
+         from instrument_symbols s
          join instruments i on i.id = s.instrument_id
          join symbologies g on g.id = s.symbology_id
-         where upper(i.symbol) = upper($1) and g.venue = 'Hyperliquid'
+         where upper(i.symbol) = upper($1)
+           and (g.code = 'Hyperliquid' or g.code like 'Hyperliquid\\_%')
            and (s.valid_to is null or s.valid_to > now())",
     )
     .bind(&q.instrument)
