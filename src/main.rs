@@ -232,14 +232,14 @@ async fn live_setup(State(app): State<Arc<App>>) -> ApiResult {
                 .map(|m| m.keys().cloned().collect::<Vec<_>>())
                 .unwrap_or_default()
             {
-                let binance = symbols["binance_perps"][&canonical]
-                    .as_str()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| format!("{}USDT", canonical.to_uppercase()));
-                let hl = symbols["hyperliquid"][&canonical]
-                    .as_str()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| canonical.clone());
+                // The store's names or nothing: an unmapped instrument is
+                // left off the page rather than guessed at.
+                let (Some(binance), Some(hl)) = (
+                    symbols["binance_perps"][&canonical].as_str().map(str::to_owned),
+                    symbols["hyperliquid"][&canonical].as_str().map(str::to_owned),
+                ) else {
+                    continue;
+                };
                 instruments.entry(canonical.clone()).or_insert(json!({
                     "canonical": canonical,
                     "binance": binance,
@@ -314,11 +314,10 @@ async fn competitor(State(app): State<Arc<App>>, Query(q): Query<CompetitorQuery
             "a window is at most 6 hours and must end after it starts".to_owned(),
         ));
     }
-    // The venue's own spelling of each mapping: the main dex's symbol as
-    // is, a builder dex's as `<dex>:<symbol>` from the symbology code.
+    // Every Hyperliquid symbology (the main dex and the builder dexes):
+    // the symbol stored under each is the name the venue trades.
     let mut coins: Vec<String> = sqlx::query_scalar(
-        "select distinct case when g.code = 'Hyperliquid' then s.symbol
-                              else lower(substr(g.code, 13)) || ':' || s.symbol end
+        "select distinct s.symbol
          from instrument_symbols s
          join instruments i on i.id = s.instrument_id
          join symbologies g on g.id = s.symbology_id
