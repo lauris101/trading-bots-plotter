@@ -227,6 +227,12 @@ async fn live_setup(State(app): State<Arc<App>>) -> ApiResult {
         };
         let symbols = &doc["symbols"];
         for strategy in doc["config"]["strategies"].as_array().into_iter().flatten() {
+            // The strategy's own trading venue names its coins
+            // (`symbols["hyperliquid_xyz"]["CL"]` = `xyz:CL`); a strategy
+            // that trades nowhere has no lagger side to plot.
+            let Some(lagger) = strategy["lagger_venue"].as_str() else {
+                continue;
+            };
             for canonical in strategy["instruments"]
                 .as_object()
                 .map(|m| m.keys().cloned().collect::<Vec<_>>())
@@ -235,8 +241,10 @@ async fn live_setup(State(app): State<Arc<App>>) -> ApiResult {
                 // The store's names or nothing: an unmapped instrument is
                 // left off the page rather than guessed at.
                 let (Some(binance), Some(hl)) = (
-                    symbols["binance_perps"][&canonical].as_str().map(str::to_owned),
-                    symbols["hyperliquid"][&canonical].as_str().map(str::to_owned),
+                    symbols["binance_perps"][&canonical]
+                        .as_str()
+                        .map(str::to_owned),
+                    symbols[lagger][&canonical].as_str().map(str::to_owned),
                 ) else {
                     continue;
                 };
@@ -399,7 +407,9 @@ async fn competitor(State(app): State<Arc<App>>, Query(q): Query<CompetitorQuery
             })
         })
         .collect();
-    Ok(Json(json!({ "address": address, "coins": coins, "orders": orders, "fills": fills })))
+    Ok(Json(
+        json!({ "address": address, "coins": coins, "orders": orders, "fills": fills }),
+    ))
 }
 
 // ---- the bot's current parameters for one key -----------------------------
