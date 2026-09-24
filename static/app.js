@@ -884,10 +884,11 @@
     const full = { x0: from, x1: to, y0: Number.isFinite(lo) ? lo - pad : 0, y1: Number.isFinite(hi) ? hi + pad : 1 };
     // Time-anchored, not price-anchored: a hold has no price, and what it
     // explains is the ABSENCE of orders in that stretch.
+    const holds = holdSpans(w.conditions ?? []);
     const conditions = (w.conditions ?? [])
       .filter((c) => CONDITION[c.kind])
       .map((c) => ({ t: c.t, kind: c.kind, details: c.details ?? {} }));
-    return { inst, lines, marks, dev, threshold, full, conditions, slope, impulse, breakevens, protections };
+    return { inst, lines, marks, dev, threshold, full, conditions, holds, slope, impulse, breakevens, protections };
   }
 
   /** The conditions worth a rule on the chart, and how they are drawn. A
@@ -896,9 +897,29 @@
   const CONDITION = {
     shock_hold:     ["#d29922", "shock"],
     no_follow_hold: ["#db6d28", "no follow"],
+    decouple_hold:  ["#e3b341", "decoupled"],
     phase:          ["#f85149", "phase"],
     resync:         ["#a371f7", "resync"],
   };
+  /** A decouple hold as a span: from its `decouple_hold` event to the
+   *  `decouple_hold_end` that follows (or the event's own `hold_ms` when
+   *  the end was not recorded: records before 2026-09-24, or a hold still
+   *  running at the window's edge). Opens were held for the whole span. */
+  function holdSpans(conditions) {
+    const spans = [];
+    let open = null;
+    for (const c of conditions) {
+      if (c.kind === "decouple_hold") {
+        if (open) spans.push({ t0: open.t, t1: open.t + (Number(open.details?.hold_ms) || 60000), kind: open.details?.kind, recorded: false });
+        open = c;
+      } else if (c.kind === "decouple_hold_end" && open) {
+        spans.push({ t0: open.t, t1: c.t, kind: open.details?.kind, recorded: true });
+        open = null;
+      }
+    }
+    if (open) spans.push({ t0: open.t, t1: open.t + (Number(open.details?.hold_ms) || 60000), kind: open.details?.kind, recorded: false });
+    return spans;
+  }
 
   // ---- legend: every line and marker group toggles on its own ----
   function renderLegend() {
@@ -1118,6 +1139,18 @@
     // The gate first of all: where an open would have gone through, as a
     // band across the whole pane, under the quotes and the markers.
     paintGate(P, P.price, v, w.dev);
+    // Decouple holds as shaded spans: opens were held from the strike that
+    // tripped it to the recorded end. Background, under everything.
+    for (const h of w.holds ?? []) {
+      if (h.t1 < v.x0 || h.t0 > v.x1) continue;
+      const x0 = Math.max(P.left, xPx(P, h.t0, v)), x1 = Math.min(P.left + P.w, xPx(P, h.t1, v));
+      ctx.fillStyle = "#e3b341"; ctx.globalAlpha = 0.10;
+      ctx.fillRect(x0, P.price.top, Math.max(1, x1 - x0), P.price.h);
+      ctx.globalAlpha = 0.9; ctx.fillStyle = "#e3b341"; ctx.font = "10px ui-monospace, monospace";
+      ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+      ctx.fillText(`opens held: ${h.kind ?? "decoupled"} ${Math.round((h.t1 - h.t0) / 1000)}s${h.recorded ? "" : " (end not recorded)"}`, x0 + 3, P.price.top + P.price.h - 2);
+      ctx.globalAlpha = 1;
+    }
     // Conditions next, so every quote line and marker sits on top of them:
     // they are background, not something to read a price off.
     for (const c of w.conditions ?? []) {
