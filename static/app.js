@@ -442,6 +442,7 @@
       const f = (v, p = 1) => (typeof v === "number" ? v.toFixed(p) : "-");
       lines.push(`<b>decision</b> dev ${f(d.deviation_bps)} bps (raw ${f(d.raw_deviation_bps)}), basis ${f(d.basis_bps)}`);
       lines.push(`threshold ${f(d.threshold_bps)} bps, gain ${f(d.gain_bps)} (raw ${f(d.raw_gain_bps)}), rho ${f(d.rho, 2)}, delta ${f(d.delta_ms, 0)} ms`);
+      if (d.margin_bps != null) lines.push(`threshold = fees 2 x ${f(d.fees_bps, 2)} + base bribe ${f(d.base_priority_bps)} + margin ${f(d.margin_bps)} bps; sent bribe ${e.priority != null ? (Number(e.priority) / 1e4).toFixed(1) : "-"} bps; reach ${f(d.reach_bps)} bps past the touch (floor: taker offset ${f(d.taker_offset_bps)})`);
       lines.push(`leader mid ${esc(d.leader_mid)}  lagger ${esc(d.lagger_bid)} / ${esc(d.lagger_ask)}`);
       if (d.leader_impulse_bps != null) lines.push(`leader impulse ${f(d.leader_impulse_bps)} bps off its short ema`);
       lines.push(`quote age: leader ${f(d.leader_age_ms, 0)} ms, lagger ${f(d.lagger_age_ms, 0)} ms`);
