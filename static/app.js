@@ -792,18 +792,20 @@
     // recorded, all red on the page).
     const leader = w.quotes.by_venue.binance_perps ?? w.quotes.by_venue.binance ?? [];
     const lagger = w.quotes.by_venue.hyperliquid ?? [];
-    const dev = { t: [], v: [], basis: false };
+    // `half` is the lagger's half spread at each sample, bps: what the gain
+    // (rho x deviation - half spread) is short of the deviation by.
+    const dev = { t: [], v: [], half: [], basis: false };
     {
-      let i = 0, j = 0, lm = null, hm = null;
+      let i = 0, j = 0, lm = null, hm = null, hs = 0;
       while (i < leader.length || j < lagger.length) {
         const takeLeader = j >= lagger.length || (i < leader.length && leader[i].t <= lagger[j].t);
         let t;
         if (takeLeader) { lm = (leader[i].bid + leader[i].ask) / 2; t = leader[i].t; i++; }
-        else { hm = (lagger[j].bid + lagger[j].ask) / 2; t = lagger[j].t; j++; }
+        else { hm = (lagger[j].bid + lagger[j].ask) / 2; hs = hm > 0 ? (10000 * (lagger[j].ask - lagger[j].bid)) / (2 * hm) : 0; t = lagger[j].t; j++; }
         if (lm == null || hm == null || !(hm > 0)) continue;
         // One sample per instant: a later quote at the same time replaces it.
-        if (dev.t.length && dev.t[dev.t.length - 1] === t) { dev.v[dev.v.length - 1] = 10000 * (lm / hm - 1); continue; }
-        dev.t.push(t); dev.v.push(10000 * (lm / hm - 1));
+        if (dev.t.length && dev.t[dev.t.length - 1] === t) { dev.v[dev.v.length - 1] = 10000 * (lm / hm - 1); dev.half[dev.half.length - 1] = hs; continue; }
+        dev.t.push(t); dev.v.push(10000 * (lm / hm - 1)); dev.half.push(hs);
       }
     }
     // The bot's DEVIATION is the edge less its basis, the slow EMA of the
@@ -866,16 +868,21 @@
     }
     const last = [...w.events].reverse().find((e) => e.decision?.threshold_bps != null);
     const threshold = last ? last.decision.threshold_bps : null;
-    // Where the gate would have let an open through: the deviation past the
+    const rho = last && Number.isFinite(last.decision.rho) ? last.decision.rho : 0.9;
+    // Where the gate would have let an open through: the GAIN past the
     // threshold AND the impulse, at that instant and the deviation's way,
-    // at least max(min, fraction x |deviation|). +1 open, -1 refused by the
-    // impulse, 0 nothing to open. (The threshold is the last decision's in
-    // the window; rho, the half spread and the holds are not modelled.)
+    // at least max(min, fraction x |deviation|). The gain is what the bot
+    // tests, rho x |deviation| less the lagger's half spread, not the
+    // deviation itself (ALGO 2026-09-25 23:20: a 35.9 bps deviation read
+    // green here against a 32.6 threshold while the gain was 30.5 and the
+    // bot did not fire). +1 open, -1 refused by the impulse, 0 nothing to
+    // open. (The threshold and rho are the last decision's in the window;
+    // the holds are not modelled.)
     if (impulse && threshold != null) {
       dev.gate = new Int8Array(dev.t.length);
       for (let k = 0; k < dev.t.length; k++) {
         const dv = dev.v[k];
-        if (Math.abs(dv) <= threshold) continue;
+        if (rho * Math.abs(dv) - dev.half[k] <= threshold) continue;
         const gap = impulse.at(dev.t[k]) * Math.sign(dv);
         const needed = Math.max(impulse.min, impulse.frac * Math.abs(dv));
         dev.gate[k] = gap >= needed ? 1 : -1;
@@ -889,7 +896,7 @@
     const conditions = (w.conditions ?? [])
       .filter((c) => CONDITION[c.kind])
       .map((c) => ({ t: c.t, kind: c.kind, details: c.details ?? {} }));
-    return { inst, lines, marks, dev, threshold, full, conditions, holds, slope, impulse, breakevens, protections };
+    return { inst, lines, marks, dev, threshold, rho, full, conditions, holds, slope, impulse, breakevens, protections };
   }
 
   /** The conditions worth a rule on the chart, and how they are drawn. A
@@ -947,7 +954,7 @@
       ...(state.win.impulse
         ? [
             { id: "leader:impulse", name: `leader impulse ${state.win.impulse.hl} ms (bps${state.win.impulse.min > 0 ? `, gate ${state.win.impulse.min}` : ""})`, color: IMPULSE_COLOR, kind: "line" },
-            ...(state.win.dev.gate ? [{ id: "gate:overlay", name: "gate bands: green an open would have gone through, red the impulse refused it", color: GREEN, kind: "line" }] : []),
+            ...(state.win.dev.gate ? [{ id: "gate:overlay", name: "gate bands: green the gain (rho x deviation - half spread) cleared the threshold and the impulse let it through, red the impulse refused it", color: GREEN, kind: "line" }] : []),
           ]
         : []),
     ];
@@ -1404,7 +1411,7 @@
       }
     }
     ctx.save(); ctx.translate(14, P.bps.top + P.bps.h / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillStyle = "#8b98a9";
-    ctx.fillText(`${w.dev.basis ? "deviation (leader over lagger, less basis)" : "leader over lagger"}, bps${w.threshold != null ? ` (dashed: threshold ${w.threshold.toFixed(1)})` : ""}`, 0, 0); ctx.restore();
+    ctx.fillText(`${w.dev.basis ? "deviation (leader over lagger, less basis)" : "leader over lagger"}, bps${w.threshold != null ? ` (dashed: threshold ${w.threshold.toFixed(1)} on the GAIN = ${(w.rho ?? 0.9).toFixed(2)} x deviation - half spread)` : ""}`, 0, 0); ctx.restore();
     }
 
     // ---- rubber band ----
