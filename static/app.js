@@ -592,30 +592,6 @@
     // The EMA of the Hyperliquid mid at the chosen half-life -- the bot's
     // own definition, so the line is what the strategy sees, not a textbook
     // EMA: the estimate moves toward the observation it has been HOLDING by
-    // The bot's SMOOTHED deviation: its EMAs of each venue's mid at
-    // `ema.halftime_ms` (the ema control), edged and less the basis, sampled
-    // at the same instants as the raw one. The open needs BOTH the smoothed
-    // gain and the raw gain past the threshold; the raw deviation alone
-    // painted green stretches where the smoothed signal was still short
-    // (ALGO 2026-09-25 23:20).
-    const sigMs = Math.max(1, Number($("ema").value) || 8);
-    dev.s = new Float64Array(dev.t.length);
-    {
-      let i = 0, j = 0, le = null, he = null, lh = null, hh = null, lt = 0, ht = 0, k = 0;
-      const step = (est, held, ts, r) => { const dt = Math.max(0, r.t - ts); return est + (held - est) * (1 - Math.pow(0.5, dt / sigMs)); };
-      while (i < leader.length || j < lagger.length) {
-        const takeLeader = j >= lagger.length || (i < leader.length && leader[i].t <= lagger[j].t);
-        let t;
-        if (takeLeader) { const r = leader[i]; const mid = (r.bid + r.ask) / 2; le = le == null ? mid : step(le, lh, lt, r); lh = mid; lt = r.t; t = r.t; i++; }
-        else { const r = lagger[j]; const mid = (r.bid + r.ask) / 2; he = he == null ? mid : step(he, hh, ht, r); hh = mid; ht = r.t; t = r.t; j++; }
-        if (le == null || he == null || !(he > 0)) continue;
-        // Advance to the raw sample at this instant (the two loops walk the same merged tape).
-        while (k < dev.t.length && dev.t[k] < t) k++;
-        if (k < dev.t.length && dev.t[k] === t) dev.s[k] = 10000 * (le / he - 1);
-      }
-      // Instants the smoothed walk skipped keep the previous value.
-      for (let m = 1; m < dev.s.length; m++) if (dev.s[m] === 0 && dev.t[m] !== dev.t[m - 1]) dev.s[m] = dev.s[m - 1];
-    }
     // 1 - 0.5^(dt / halftime) when the next one arrives, then holds that.
     // Time-based, so irregular ticks are weighted by how long they stood.
     // On a bucketed window the input is the bucket's last quote, which
@@ -836,6 +812,30 @@
     // edge (taker.signal.basis_halftime_ms): a standing offset between the
     // venues is not a signal. With a half-life set, the pane shows that,
     // as the bot sees it; 0 shows the raw edge.
+    // The bot's SMOOTHED deviation: its EMAs of each venue's mid at
+    // `ema.halftime_ms` (the ema control), edged and less the basis, sampled
+    // at the same instants as the raw one. The open needs BOTH the smoothed
+    // gain and the raw gain past the threshold; the raw deviation alone
+    // painted green stretches where the smoothed signal was still short
+    // (ALGO 2026-09-25 23:20).
+    const sigMs = Math.max(1, Number($("ema").value) || 8);
+    dev.s = new Float64Array(dev.t.length);
+    {
+      let i = 0, j = 0, le = null, he = null, lh = null, hh = null, lt = 0, ht = 0, k = 0;
+      const step = (est, held, ts, r) => { const dt = Math.max(0, r.t - ts); return est + (held - est) * (1 - Math.pow(0.5, dt / sigMs)); };
+      while (i < leader.length || j < lagger.length) {
+        const takeLeader = j >= lagger.length || (i < leader.length && leader[i].t <= lagger[j].t);
+        let t;
+        if (takeLeader) { const r = leader[i]; const mid = (r.bid + r.ask) / 2; le = le == null ? mid : step(le, lh, lt, r); lh = mid; lt = r.t; t = r.t; i++; }
+        else { const r = lagger[j]; const mid = (r.bid + r.ask) / 2; he = he == null ? mid : step(he, hh, ht, r); hh = mid; ht = r.t; t = r.t; j++; }
+        if (le == null || he == null || !(he > 0)) continue;
+        // Advance to the raw sample at this instant (the two loops walk the same merged tape).
+        while (k < dev.t.length && dev.t[k] < t) k++;
+        if (k < dev.t.length && dev.t[k] === t) dev.s[k] = 10000 * (le / he - 1);
+      }
+      // Instants the smoothed walk skipped keep the previous value.
+      for (let m = 1; m < dev.s.length; m++) if (dev.s[m] === 0 && dev.t[m] !== dev.t[m - 1]) dev.s[m] = dev.s[m - 1];
+    }
     const basisHl = Number($("basishl").value);
     if (basisHl > 0 && dev.t.length) {
       let est = dev.v[0], held = dev.v[0], ts = dev.t[0];
