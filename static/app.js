@@ -592,6 +592,30 @@
     // The EMA of the Hyperliquid mid at the chosen half-life -- the bot's
     // own definition, so the line is what the strategy sees, not a textbook
     // EMA: the estimate moves toward the observation it has been HOLDING by
+    // The bot's SMOOTHED deviation: its EMAs of each venue's mid at
+    // `ema.halftime_ms` (the ema control), edged and less the basis, sampled
+    // at the same instants as the raw one. The open needs BOTH the smoothed
+    // gain and the raw gain past the threshold; the raw deviation alone
+    // painted green stretches where the smoothed signal was still short
+    // (ALGO 2026-09-25 23:20).
+    const sigMs = Math.max(1, Number($("ema").value) || 8);
+    dev.s = new Float64Array(dev.t.length);
+    {
+      let i = 0, j = 0, le = null, he = null, lh = null, hh = null, lt = 0, ht = 0, k = 0;
+      const step = (est, held, ts, r) => { const dt = Math.max(0, r.t - ts); return est + (held - est) * (1 - Math.pow(0.5, dt / sigMs)); };
+      while (i < leader.length || j < lagger.length) {
+        const takeLeader = j >= lagger.length || (i < leader.length && leader[i].t <= lagger[j].t);
+        let t;
+        if (takeLeader) { const r = leader[i]; const mid = (r.bid + r.ask) / 2; le = le == null ? mid : step(le, lh, lt, r); lh = mid; lt = r.t; t = r.t; i++; }
+        else { const r = lagger[j]; const mid = (r.bid + r.ask) / 2; he = he == null ? mid : step(he, hh, ht, r); hh = mid; ht = r.t; t = r.t; j++; }
+        if (le == null || he == null || !(he > 0)) continue;
+        // Advance to the raw sample at this instant (the two loops walk the same merged tape).
+        while (k < dev.t.length && dev.t[k] < t) k++;
+        if (k < dev.t.length && dev.t[k] === t) dev.s[k] = 10000 * (le / he - 1);
+      }
+      // Instants the smoothed walk skipped keep the previous value.
+      for (let m = 1; m < dev.s.length; m++) if (dev.s[m] === 0 && dev.t[m] !== dev.t[m - 1]) dev.s[m] = dev.s[m - 1];
+    }
     // 1 - 0.5^(dt / halftime) when the next one arrives, then holds that.
     // Time-based, so irregular ticks are weighted by how long they stood.
     // On a bucketed window the input is the bucket's last quote, which
@@ -822,6 +846,7 @@
           held = dev.v[k]; ts = Math.max(ts, dev.t[k]);
         }
         dev.v[k] -= est;
+        dev.s[k] -= est;
       }
       dev.basis = true;
     }
@@ -878,11 +903,20 @@
     // bot did not fire). +1 open, -1 refused by the impulse, 0 nothing to
     // open. (The threshold and rho are the last decision's in the window;
     // the holds are not modelled.)
+    // The gains the bot tests, signed like the deviation: the smoothed one
+    // (the trigger) and the raw one (the books must still offer it).
+    dev.gain = new Float64Array(dev.t.length);
+    dev.rawGain = new Float64Array(dev.t.length);
+    for (let k = 0; k < dev.t.length; k++) {
+      dev.gain[k] = Math.sign(dev.s[k]) * (rho * Math.abs(dev.s[k]) - dev.half[k]);
+      dev.rawGain[k] = Math.sign(dev.v[k]) * (rho * Math.abs(dev.v[k]) - dev.half[k]);
+    }
     if (impulse && threshold != null) {
       dev.gate = new Int8Array(dev.t.length);
       for (let k = 0; k < dev.t.length; k++) {
         const dv = dev.v[k];
-        if (rho * Math.abs(dv) - dev.half[k] <= threshold) continue;
+        // Both gains past the threshold, on the same side.
+        if (Math.abs(dev.gain[k]) <= threshold || Math.abs(dev.rawGain[k]) <= threshold || Math.sign(dev.gain[k]) !== Math.sign(dev.rawGain[k])) continue;
         const gap = impulse.at(dev.t[k]) * Math.sign(dv);
         const needed = Math.max(impulse.min, impulse.frac * Math.abs(dv));
         dev.gate[k] = gap >= needed ? 1 : -1;
@@ -954,7 +988,9 @@
       ...(state.win.impulse
         ? [
             { id: "leader:impulse", name: `leader impulse ${state.win.impulse.hl} ms (bps${state.win.impulse.min > 0 ? `, gate ${state.win.impulse.min}` : ""})`, color: IMPULSE_COLOR, kind: "line" },
-            ...(state.win.dev.gate ? [{ id: "gate:overlay", name: "gate bands: green the gain (rho x deviation - half spread) cleared the threshold and the impulse let it through, red the impulse refused it", color: GREEN, kind: "line" }] : []),
+            { id: "dev:gain", name: `gain, smoothed (${Number($("ema").value) || 8} ms ema): rho x deviation - half spread, the trigger`, color: "#ffd166", kind: "line" },
+            { id: "dev:rawgain", name: "gain, raw books", color: "#ff9f43", kind: "line" },
+            ...(state.win.dev.gate ? [{ id: "gate:overlay", name: "gate bands: green both gains cleared the threshold and the impulse let it through, red the impulse refused it", color: GREEN, kind: "line" }] : []),
           ]
         : []),
     ];
@@ -1361,6 +1397,15 @@
       for (let i = i0 + 1; i <= i1; i++) { const x = xPx(P, d.t[i], v); ctx.lineTo(x, py); py = yPx(P.bps, d.v[i], blo, bhi); ctx.lineTo(x, py); }
       ctx.lineTo(P.left + P.w, py);
       ctx.stroke();
+      for (const [id, arr, color, width] of [["dev:rawgain", d.rawGain, "#ff9f43", 1], ["dev:gain", d.gain, "#ffd166", 1.6]]) {
+        if (!arr || state.hidden.has(id)) continue;
+        ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
+        let gy = yPx(P.bps, arr[i0], blo, bhi);
+        ctx.moveTo(xPx(P, d.t[i0], v), gy);
+        for (let i = i0 + 1; i <= i1; i++) { const x = xPx(P, d.t[i], v); ctx.lineTo(x, gy); gy = yPx(P.bps, arr[i], blo, bhi); ctx.lineTo(x, gy); }
+        ctx.lineTo(P.left + P.w, gy);
+        ctx.stroke();
+      }
     }
     // The leader's impulse on the same bps axis as the deviation, with the
     // gate's threshold dashed either side of zero: an open needed the
@@ -1411,7 +1456,7 @@
       }
     }
     ctx.save(); ctx.translate(14, P.bps.top + P.bps.h / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillStyle = "#8b98a9";
-    ctx.fillText(`${w.dev.basis ? "deviation (leader over lagger, less basis)" : "leader over lagger"}, bps${w.threshold != null ? ` (dashed: threshold ${w.threshold.toFixed(1)} on the GAIN = ${(w.rho ?? 0.9).toFixed(2)} x deviation - half spread)` : ""}`, 0, 0); ctx.restore();
+    ctx.fillText(`${w.dev.basis ? "deviation (leader over lagger, less basis)" : "leader over lagger"} and the gains, bps${w.threshold != null ? ` (dashed: threshold ${w.threshold.toFixed(1)}; an open needs both gains past it)` : ""}`, 0, 0); ctx.restore();
     }
 
     // ---- rubber band ----
