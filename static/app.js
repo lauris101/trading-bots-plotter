@@ -1361,13 +1361,18 @@
       ctx.stroke();
     }
     ctx.setLineDash([]);
+    // The cycle under the pointer: a hovered table row names it, else the
+    // pinned or hovered point does, so every point of that order lights
+    // up from either side.
+    const hc = state.hoverCloid ?? state.pinned?.cloid ?? state.hoverPt?.cloid ?? null;
+    const he = state.hoverCloid ? state.hoverEvent : (state.pinned?.id ?? state.hoverPt?.id ?? null);
     const ringed = [];
     for (const m of w.marks) {
       if (state.hidden.has(m.id)) continue;
       for (const p of m.pts) {
         if (p.t < v.x0 || p.t > v.x1) continue;
         drawSymbol(ctx, m.symbol, xPx(P, p.t, v), yPx(P.price, p.y, v.y0, v.y1), m.size, m.color, m.solid);
-        if (state.hoverCloid && p.cloid === state.hoverCloid) ringed.push({ p, size: m.size, own: p.id === state.hoverEvent });
+        if (hc && p.cloid === hc) ringed.push({ p, size: m.size, own: p.id === he });
       }
     }
     // The slope at each exit IOC, as a tangent through the marker: the
@@ -1587,7 +1592,12 @@
     if (!state.pinned) {
       const best = nearestMark(p);
       if (best) showTip(best, p, false); else tip.hidden = true;
-      if ((best?.t !== state.hoverPt?.t) || (best?.y !== state.hoverPt?.y)) { state.hoverPt = best; requestDraw(); }
+      if ((best?.t !== state.hoverPt?.t) || (best?.y !== state.hoverPt?.y)) {
+        state.hoverPt = best;
+        // The hovered point's order lights up in the table too.
+        for (const tr of document.querySelectorAll("tr.o[data-cloid]")) tr.classList.toggle("hov", !!best?.cloid && tr.dataset.cloid === best.cloid);
+        requestDraw();
+      }
     }
     if (p.x >= P.left && p.x <= P.left + P.w) {
       const t = pxX(P, p.x, v);
@@ -1649,7 +1659,11 @@
   }, { passive: false });
   cv.addEventListener("mouseleave", () => {
     if (!state.pinned) tip.hidden = true;
-    if (state.hoverPt) { state.hoverPt = null; requestDraw(); }
+    if (state.hoverPt) {
+      state.hoverPt = null;
+      for (const tr of document.querySelectorAll("tr.o.hov")) tr.classList.remove("hov");
+      requestDraw();
+    }
   });
 
   // ---- the splitter between the order list and the plot ----
