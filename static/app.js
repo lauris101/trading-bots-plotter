@@ -443,6 +443,11 @@
       lines.push(`<b>decision</b> dev ${f(d.deviation_bps)} bps (raw ${f(d.raw_deviation_bps)}), basis ${f(d.basis_bps)}`);
       lines.push(`threshold ${f(d.threshold_bps)} bps, gain ${f(d.gain_bps)} (raw ${f(d.raw_gain_bps)}), rho ${f(d.rho, 2)}, delta ${f(d.delta_ms, 0)} ms`);
       if (d.margin_bps != null) lines.push(`threshold = fees 2 x ${f(d.fees_bps, 2)} + base bribe ${f(d.base_priority_bps)} + margin ${f(d.margin_bps)} bps; sent bribe ${e.priority != null ? (Number(e.priority) / 1e4).toFixed(1) : "-"} bps; reach ${f(d.reach_bps)} bps past the touch (floor: taker offset ${f(d.taker_offset_bps)})`);
+      if (d.landing_px != null) {
+        const mid = (Number(d.lagger_bid) + Number(d.lagger_ask)) / 2;
+        const bpsOf = (px) => (mid > 0 ? ((Number(px) / mid - 1) * 10000).toFixed(1) : "-");
+        lines.push(`expected landing ${Number(d.landing_px).toPrecision(6)} (${bpsOf(d.landing_px)} bps off the mid) after ${f(d.delta_ms, 0)} ms at rho ${f(d.rho, 2)} in force; the lag model measures rho ${f(d.rho_measured, 2)}, lag ${f(d.delta_measured_ms, 0)} ms over ${d.lag_samples ?? "-"} episodes -> ${Number(d.landing_measured_px).toPrecision(6)} (${bpsOf(d.landing_measured_px)} bps)`);
+      }
       lines.push(`leader mid ${esc(d.leader_mid)}  lagger ${esc(d.lagger_bid)} / ${esc(d.lagger_ask)}`);
       if (d.leader_impulse_bps != null) lines.push(`leader impulse ${f(d.leader_impulse_bps)} bps off its short ema`);
       lines.push(`quote age: leader ${f(d.leader_age_ms, 0)} ms, lagger ${f(d.lagger_age_ms, 0)} ms`);
@@ -454,6 +459,7 @@
   const SLOPE_COLOR = "#ff9f43";
   const IMPULSE_COLOR = "#c084fc";
   const BREAKEVEN_COLOR = "#f2cc60";
+  const LANDING_COLOR = "#79c0ff";
   const PROTECTION_COLOR = "#f0883e";
   const VENUE = {
     binance_perps: { width: 1, color: "#3d7bd6", label: "binance" },
@@ -740,6 +746,26 @@
         });
       }
     }
+    // Where each open expected the lagger's mid to LAND: the mid at the
+    // decision moved by rho x raw deviation, one lag after the send. Two
+    // readings per open: the rho and lag in force (what the bot acted on;
+    // fixed numbers under lag.mode fixed) and the lag model's measured
+    // ones, which the bot records in both modes. Older records carry no
+    // landing; the fixed one is rebuilt from the decision's inputs.
+    const landings = [];
+    for (const e of w.events) {
+      if (e.kind !== "sent" || e.reduce_only || !e.side || !e.decision) continue;
+      const d = e.decision;
+      const mid = (Number(d.lagger_bid) + Number(d.lagger_ask)) / 2;
+      const fixed = Number.isFinite(Number(d.landing_px)) ? Number(d.landing_px) : mid * (1 + (Number(d.rho) * Number(d.raw_deviation_bps)) / 10000);
+      if (!Number.isFinite(fixed) || fixed <= 0) continue;
+      const measured = Number.isFinite(Number(d.landing_measured_px)) ? Number(d.landing_measured_px) : null;
+      landings.push({
+        cloid: e.cloid, side: e.side, t0: e.t, mid,
+        fixed: { t: e.t + (Number(d.delta_ms) || 0), y: fixed, rho: Number(d.rho), delta: Number(d.delta_ms) },
+        measured: measured != null ? { t: e.t + (Number(d.delta_measured_ms) || 0), y: measured, rho: Number(d.rho_measured), delta: Number(d.delta_measured_ms), n: Number(d.lag_samples) } : null,
+      });
+    }
     // The trail exit's levels: each stop at its trigger and each trail at
     // its activation, from the send to the order's end (its cancel, its
     // fill, or the cycle's last event). An armed trail's trigger lives on
@@ -930,7 +956,7 @@
     const conditions = (w.conditions ?? [])
       .filter((c) => CONDITION[c.kind])
       .map((c) => ({ t: c.t, kind: c.kind, details: c.details ?? {} }));
-    return { inst, lines, marks, dev, threshold, rho, full, conditions, holds, slope, impulse, breakevens, protections };
+    return { inst, lines, marks, dev, threshold, rho, full, conditions, holds, slope, impulse, breakevens, landings, protections };
   }
 
   /** The conditions worth a rule on the chart, and how they are drawn. A
@@ -977,6 +1003,12 @@
         : []),
       ...(state.win.breakevens?.length
         ? [{ id: "breakeven", name: "break-even of each open (worst fill + costs)", color: BREAKEVEN_COLOR, kind: "dash" }]
+        : []),
+      ...(state.win.landings?.length
+        ? [
+            { id: "landing", name: "expected landing of each open: mid + rho x raw deviation, one lag after the send (rho and lag in force)", color: LANDING_COLOR, kind: "diamond", solid: true },
+            ...(state.win.landings.some((l) => l.measured) ? [{ id: "landing:measured", name: "expected landing with the lag model's MEASURED rho and lag", color: LANDING_COLOR, kind: "diamond", solid: false }] : []),
+          ]
         : []),
       ...(state.win.protections?.length
         ? [
@@ -1231,6 +1263,40 @@
         ctx.setLineDash([]); ctx.globalAlpha = 1;
         ctx.fillStyle = BREAKEVEN_COLOR;
         ctx.fillText(`break-even ${b.y.toPrecision(6)}`, x0 + 3, y - 2);
+      }
+      ctx.textBaseline = "middle";
+    }
+    // Expected landing of each open: a dotted lead from the touch mid at
+    // the send to the landing one lag later, and a diamond there. Filled
+    // for the rho and lag in force, hollow for the lag model's measured
+    // ones (drawn only when they differ from the fixed reading).
+    if (w.landings?.length) {
+      ctx.font = "10px ui-monospace, monospace"; ctx.textAlign = "left"; ctx.textBaseline = "top";
+      const diamond = (x, y, fill) => {
+        ctx.beginPath(); ctx.moveTo(x, y - 5); ctx.lineTo(x + 5, y); ctx.lineTo(x, y + 5); ctx.lineTo(x - 5, y); ctx.closePath();
+        if (fill) { ctx.fillStyle = LANDING_COLOR; ctx.fill(); } else { ctx.strokeStyle = LANDING_COLOR; ctx.lineWidth = 1.5; ctx.stroke(); }
+      };
+      for (const l of w.landings) {
+        const readings = [
+          ...(state.hidden.has("landing") ? [] : [{ ...l.fixed, fill: true, label: `land ${l.fixed.y.toPrecision(6)} (rho ${l.fixed.rho.toFixed(2)}, ${Math.round(l.fixed.delta)} ms)` }]),
+          ...(l.measured && !state.hidden.has("landing:measured") && (l.measured.y !== l.fixed.y || l.measured.t !== l.fixed.t)
+            ? [{ ...l.measured, fill: false, label: `measured ${l.measured.y.toPrecision(6)} (rho ${l.measured.rho.toFixed(2)}, ${Math.round(l.measured.delta)} ms, n ${l.measured.n})` }]
+            : []),
+        ];
+        for (const r of readings) {
+          if (r.t < v.x0 || l.t0 > v.x1) continue;
+          const x0 = xPx(P, l.t0, v), x1 = xPx(P, r.t, v);
+          const y0 = yPx(P.price, l.mid, v.y0, v.y1), y1 = yPx(P.price, r.y, v.y0, v.y1);
+          if (y1 < P.price.top - 12 || y1 > P.price.top + P.price.h + 12) continue;
+          ctx.strokeStyle = LANDING_COLOR; ctx.lineWidth = 1; ctx.setLineDash([2, 3]); ctx.globalAlpha = 0.8;
+          ctx.beginPath(); ctx.moveTo(Math.max(P.left, x0), y0); ctx.lineTo(Math.min(P.left + P.w, x1), y1); ctx.stroke();
+          ctx.setLineDash([]); ctx.globalAlpha = 1;
+          if (x1 >= P.left && x1 <= P.left + P.w) {
+            diamond(x1, y1, r.fill);
+            ctx.fillStyle = LANDING_COLOR;
+            ctx.fillText(r.label, x1 + 7, y1 + (r.fill ? -12 : 2));
+          }
+        }
       }
       ctx.textBaseline = "middle";
     }
