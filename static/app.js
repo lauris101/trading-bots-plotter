@@ -443,6 +443,7 @@
       lines.push(`<b>decision</b> dev ${f(d.deviation_bps)} bps (raw ${f(d.raw_deviation_bps)}), basis ${f(d.basis_bps)}`);
       lines.push(`threshold ${f(d.threshold_bps)} bps, gain ${f(d.gain_bps)} (raw ${f(d.raw_gain_bps)}), rho ${f(d.rho, 2)}, delta ${f(d.delta_ms, 0)} ms`);
       if (d.margin_bps != null) lines.push(`threshold = fees 2 x ${f(d.fees_bps, 2)} + base bribe ${f(d.base_priority_bps)} + margin ${f(d.margin_bps)} bps; sent bribe ${e.priority != null ? (Number(e.priority) / 1e4).toFixed(1) : "-"} bps; reach ${f(d.reach_bps)} bps past the touch (floor: taker offset ${f(d.taker_offset_bps)})`);
+      if (d.confirmed_after_ms > 0) lines.push(`sent ${f(d.confirmed_after_ms)} ms after the trigger first cleared (entry.confirm_ms): the gate and the price are this instant's`);
       if (d.priced_gain_bps != null && Math.abs(d.priced_gain_bps - d.raw_gain_bps) > 0.05) lines.push(`priced from the leader's short ema (entry.raw_halftime_ms): deviation ${f(d.priced_deviation_bps)} bps, gain ${f(d.priced_gain_bps)} bps (raw ${f(d.raw_gain_bps)}); the bribe, the reach and the landing come from these`);
       if (d.landing_px != null) {
         const mid = (Number(d.lagger_bid) + Number(d.lagger_ask)) / 2;
