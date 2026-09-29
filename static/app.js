@@ -120,17 +120,24 @@
     }
     const list = [...seen.values()].sort((a, b) => (a.last_at < b.last_at ? 1 : a.last_at > b.last_at ? -1 : 0));
     const prev = $("strategy").value;
-    $("strategy").innerHTML = list.map((s) => `<option value="${esc(s.strategy)}">${esc(s.strategy || "(none)")} (${s.orders})</option>`).join("");
-    if (list.some((s) => s.strategy === prev)) $("strategy").value = prev;
+    // "all" is every strategy of the bot at once: the instrument list is
+    // the union and the queries leave the strategy out (the server's
+    // "absent = every strategy"); the inputs panel then reads the first
+    // strategy that trades the instrument. Its value is "*" because ""
+    // is the "(none)" group, orders with no strategy at all.
+    const total = list.reduce((a, s) => a + s.orders, 0);
+    $("strategy").innerHTML = [`<option value="*">all (${total})</option>`, ...list.map((s) => `<option value="${esc(s.strategy)}">${esc(s.strategy || "(none)")} (${s.orders})</option>`)].join("");
+    if (prev === ALL_STRATEGIES || list.some((s) => s.strategy === prev)) $("strategy").value = prev;
   }
-  const strategyQuery = () => `&strategy=${encodeURIComponent($("strategy").value)}`;
+  const ALL_STRATEGIES = "*";
+  const strategyQuery = () => ($("strategy").value === ALL_STRATEGIES ? "" : `&strategy=${encodeURIComponent($("strategy").value)}`);
   function fillInstruments() {
     const bot = $("bot").value;
     const strategy = $("strategy").value;
     const mode = $("mode").value;
     const seen = new Map();
     for (const k of state.keys) {
-      if (k.bot !== bot || k.strategy !== strategy || (mode && k.mode !== mode)) continue;
+      if (k.bot !== bot || (strategy !== ALL_STRATEGIES && k.strategy !== strategy) || (mode && k.mode !== mode)) continue;
       const cur = seen.get(k.instrument);
       if (!cur || k.last_at > cur.last_at) seen.set(k.instrument, k);
     }
