@@ -761,6 +761,28 @@
     // fixed numbers under lag.mode fixed) and the lag model's measured
     // ones, which the bot records in both modes. Older records carry no
     // landing; the fixed one is rebuilt from the decision's inputs.
+    // What the BOT recorded at each open, as against what this page
+    // reconstructs. The reconstruction is built from the scraper's quotes,
+    // a different host on different sockets, so it cannot resolve a
+    // decision taken by a fraction of a bp -- MET 2026-10-01 20:14:02
+    // cleared its threshold by 0.12 bps (gain 31.757 against 31.64) and
+    // the reconstruction lands just under, painting nothing where an order
+    // plainly went out. Worse, the bot had a lagger quote 242 ms stale at
+    // that moment while this page draws the book as the scraper saw it.
+    // Plotting the bot's own gain and threshold makes the disagreement
+    // visible instead of looking like a missing band.
+    const recorded = [];
+    for (const e of w.events) {
+      if (e.kind !== "sent" || e.reduce_only || !e.decision) continue;
+      const g = Number(e.decision.gain_bps), th = Number(e.decision.threshold_bps);
+      if (!Number.isFinite(g) || !Number.isFinite(th)) continue;
+      recorded.push({
+        t: e.t, gain: g, threshold: th,
+        raw: Number(e.decision.raw_gain_bps),
+        laggerAge: Number(e.decision.lagger_age_ms),
+        cloid: e.cloid,
+      });
+    }
     const landings = [];
     for (const e of w.events) {
       if (e.kind !== "sent" || e.reduce_only || !e.side || !e.decision) continue;
@@ -1004,7 +1026,7 @@
     const conditions = (w.conditions ?? [])
       .filter((c) => CONDITION[c.kind])
       .map((c) => ({ t: c.t, kind: c.kind, details: c.details ?? {} }));
-    return { inst, lines, marks, dev, threshold, rho, full, conditions, holds, slope, impulse, breakevens, landings, protections };
+    return { inst, lines, marks, dev, threshold, rho, full, conditions, holds, slope, impulse, breakevens, landings, protections, recorded };
   }
 
   /** The conditions worth a rule on the chart, and how they are drawn. A
@@ -1077,6 +1099,7 @@
             { id: "leader:impulse", name: `leader impulse ${state.win.impulse.hl} ms (bps${state.win.impulse.min > 0 ? `, gate ${state.win.impulse.min}` : ""})`, color: IMPULSE_COLOR, kind: "line" },
             { id: "dev:gain", name: `gain, smoothed (${Number($("ema").value) || 8} ms ema): rho x deviation - half spread, the trigger`, color: "#ffd166", kind: "line" },
             { id: "dev:rawgain", name: "gain, raw books", color: "#ff9f43", kind: "line" },
+            ...(state.win.recorded?.length ? [{ id: "decision:recorded", name: "the bot's own reading at each open: dot = its gain, bar = its threshold. This page reconstructs the rest from the scraper's feed, so a dot above its bar with no green band under it is the two feeds disagreeing, not a missing gate", color: GREEN, kind: "line" }] : []),
             ...(state.win.dev.gate ? [{ id: "gate:overlay", name: "gate bands: GREEN every gate clear (both gains past the threshold, impulse let it through, no hold running) \u2014 the bot would open here; AMBER clear but a hold was running; RED the impulse refused it", color: GREEN, kind: "line" }] : []),
           ]
         : []),
@@ -1639,6 +1662,22 @@
       // draw.
       for (let i = i0; i <= i1; i++) { const x = xPx(P, im.t[i], v); ctx.moveTo(x, yPx(P.bps, 0, blo, bhi)); ctx.lineTo(x, yPx(P.bps, im.v[i], blo, bhi)); }
       ctx.stroke();
+    }
+    // The bot's OWN reading at each open: its gain as a filled dot, its
+    // threshold as a bar through it. The dot above its bar is the decision
+    // as the bot took it, whatever the reconstruction under it says.
+    if (w.recorded?.length && !state.hidden.has("decision:recorded")) {
+      for (const r of w.recorded) {
+        if (r.t < v.x0 || r.t > v.x1) continue;
+        const x = xPx(P, r.t, v);
+        const yg = yPx(P.bps, Math.abs(r.gain), blo, bhi);
+        const yt = yPx(P.bps, r.threshold, blo, bhi);
+        ctx.strokeStyle = "#c9d1d9"; ctx.lineWidth = 1; ctx.globalAlpha = 0.8;
+        ctx.beginPath(); ctx.moveTo(x - 5, yt); ctx.lineTo(x + 5, yt); ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = Math.abs(r.gain) > r.threshold ? GREEN : "#f85149";
+        ctx.beginPath(); ctx.arc(x, yg, 3, 0, Math.PI * 2); ctx.fill();
+      }
     }
     // The lagger's slope on its own (right-hand) axis, autoscaled to what is
     // visible and always including zero, so the sign reads at a glance.
