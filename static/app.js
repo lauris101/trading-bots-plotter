@@ -921,10 +921,32 @@
         const value = ema[k] + (heldAt[k] - ema[k]) * (1 - Math.pow(0.5, dt / impulseHl));
         return value > 0 ? 10000 * (heldAt[k] / value - 1) : 0;
       };
-      impulse = { t, v, hl: impulseHl, min: impulseMin, frac: impulseFrac, at };
+      // The gate as a PRICE corridor around the leader's EMA: the mid has
+      // to stand at least `needed` bps off the EMA for the impulse to
+      // clear, so the band is ema x (1 +/- needed/10000) and the gate fires
+      // exactly where the leader's own line leaves it. Reading a crossing
+      // is easier than reading a spike against a moving dashed bar, and
+      // the width shows at a glance how far out of reach the bar was.
+      //
+      // `needed` follows the deviation, which is sampled on its own clock,
+      // so it is looked up per EMA point rather than assumed aligned.
+      let band = null;
+      if (dev.t.length) {
+        const bhiArr = new Float64Array(leader.length), bloArr = new Float64Array(leader.length);
+        for (let i = 0; i < leader.length; i++) {
+          let k = lowerBound(dev.t, t[i]);
+          if (k >= dev.t.length || dev.t[k] > t[i]) k--;
+          const dv = k >= 0 ? dev.v[k] : 0;
+          const need = Math.max(impulseMin, impulseFrac * Math.abs(dv)) / 10000;
+          bhiArr[i] = ema[i] * (1 + need);
+          bloArr[i] = ema[i] * (1 - need);
+        }
+        band = { t, hi: bhiArr, lo: bloArr };
+      }
+      impulse = { t, v, hl: impulseHl, min: impulseMin, frac: impulseFrac, at, band };
       // The leader's EMA itself, on the price pane: the level the impulse
       // is measured from.
-      lines.push({ id: "binance:ema", name: `binance mid ema ${impulseHl} ms (impulse)`, color: "#8fb8ff", width: 1.5, dash: [8, 3], t, v: ema });
+      lines.push({ id: "binance:ema", name: `binance mid ema ${impulseHl} ms (impulse; shaded band is the gate)`, color: "#8fb8ff", width: 1.5, dash: [8, 3], t, v: ema });
     }
     const last = [...w.events].reverse().find((e) => e.decision?.threshold_bps != null);
     const threshold = last ? last.decision.threshold_bps : null;
@@ -1352,6 +1374,33 @@
         }
       }
       ctx.textBaseline = "middle";
+    }
+    // The impulse corridor, under the lines so they stay readable: where
+    // the leader's mid is inside this, the gate is shut however wide the
+    // deviation has opened.
+    const band = w.impulse?.band;
+    if (band && !state.hidden.has("leader:impulse") && band.t.length) {
+      let i0 = lowerBound(band.t, v.x0); if (i0 > 0) i0--;
+      const i1 = Math.min(band.t.length - 1, lowerBound(band.t, v.x1));
+      ctx.save();
+      ctx.beginPath(); ctx.rect(P.left, P.price.top, P.w, P.price.h); ctx.clip();
+      ctx.fillStyle = IMPULSE_COLOR; ctx.globalAlpha = 0.1;
+      ctx.beginPath();
+      let px = xPx(P, band.t[i0], v), py = yPx(P.price, band.hi[i0], v.y0, v.y1);
+      ctx.moveTo(px, py);
+      for (let i = i0 + 1; i <= i1; i++) {
+        const nx = xPx(P, band.t[i], v), ny = yPx(P.price, band.hi[i], v.y0, v.y1);
+        ctx.lineTo(nx, py); ctx.lineTo(nx, ny); px = nx; py = ny;
+      }
+      ctx.lineTo(P.left + P.w, py);
+      py = yPx(P.price, band.lo[i1], v.y0, v.y1);
+      ctx.lineTo(P.left + P.w, py);
+      for (let i = i1; i > i0; i--) {
+        const nx = xPx(P, band.t[i], v), ny = yPx(P.price, band.lo[i - 1], v.y0, v.y1);
+        ctx.lineTo(nx, py); ctx.lineTo(nx, ny); py = ny;
+      }
+      ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 1; ctx.restore();
     }
     for (const l of w.lines) {
       if (state.hidden.has(l.id) || !l.t.length) continue;
