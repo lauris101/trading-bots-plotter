@@ -1450,6 +1450,15 @@
         const j1 = Math.min(im.t.length - 1, lowerBound(im.t, v.x1));
         for (let i = j0; i <= j1; i++) { if (im.v[i] < lo) lo = im.v[i]; if (im.v[i] > hi) hi = im.v[i]; }
         if (im.min > 0) { lo = Math.min(lo, -im.min); hi = Math.max(hi, im.min); }
+        // The gate's bar rises with the deviation, so the pane has to make
+        // room for it or the curve that explains the refusal is cropped.
+        if (im.frac > 0) {
+          for (let i = i0; i <= i1; i++) {
+            const need = Math.max(im.min, im.frac * Math.abs(d.v[i]));
+            if (-need < lo) lo = -need;
+            if (need > hi) hi = need;
+          }
+        }
       }
       lo = Math.min(lo, 0); hi = Math.max(hi, 0);
       if (Number.isFinite(lo) && hi > lo) { const pad = (hi - lo) * 0.08; blo = lo - pad; bhi = hi + pad; }
@@ -1487,12 +1496,42 @@
         ctx.stroke();
       }
     }
-    // The leader's impulse on the same bps axis as the deviation, with the
-    // gate's threshold dashed either side of zero: an open needed the
-    // impulse past the dashed line on the deviation's side.
+    // The leader's impulse on the same bps axis as the deviation, against
+    // the bar it actually had to clear.
+    //
+    // That bar is max(leader_impulse_min_bps, leader_impulse_fraction x
+    // |deviation|), so with a fraction set it is a CURVE that rises with
+    // the deviation, not the flat floor this used to draw. Drawing only the
+    // floor understated the gate badly in exactly the windows worth
+    // explaining: NEAR 2026-10-01 19:30 showed a 1.5 bps impulse against a
+    // dashed 8, reading as a near miss, while the real bar was 19.4 because
+    // the deviation had opened to 48. The gate is hardest when the
+    // opportunity is largest, and the chart has to show that.
     const im = w.impulse;
     if (im && im.t.length && !state.hidden.has("leader:impulse")) {
-      if (im.min > 0) {
+      if (im.frac > 0 && d.t.length) {
+        // The bar at each deviation sample, mirrored: an impulse clears it
+        // on the deviation's own side, so the spike must reach the curve
+        // above for a positive deviation and below for a negative one.
+        let i0 = lowerBound(d.t, v.x0); if (i0 > 0) i0--;
+        const i1 = Math.min(d.t.length - 1, lowerBound(d.t, v.x1));
+        const needed = (k) => Math.max(im.min, im.frac * Math.abs(d.v[k]));
+        ctx.strokeStyle = IMPULSE_COLOR; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.globalAlpha = 0.7;
+        for (const sign of [1, -1]) {
+          ctx.beginPath();
+          let py = yPx(P.bps, sign * needed(i0), blo, bhi);
+          ctx.moveTo(xPx(P, d.t[i0], v), py);
+          for (let i = i0 + 1; i <= i1; i++) {
+            const x = xPx(P, d.t[i], v);
+            ctx.lineTo(x, py);
+            py = yPx(P.bps, sign * needed(i), blo, bhi);
+            ctx.lineTo(x, py);
+          }
+          ctx.lineTo(P.left + P.w, py);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]); ctx.globalAlpha = 1;
+      } else if (im.min > 0) {
         ctx.strokeStyle = IMPULSE_COLOR; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.globalAlpha = 0.7;
         for (const s of [im.min, -im.min]) { const y = yPx(P.bps, s, blo, bhi); ctx.beginPath(); ctx.moveTo(P.left, y); ctx.lineTo(P.left + P.w, y); ctx.stroke(); }
         ctx.setLineDash([]); ctx.globalAlpha = 1;
@@ -1536,7 +1575,12 @@
       }
     }
     ctx.save(); ctx.translate(14, P.bps.top + P.bps.h / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillStyle = "#8b98a9";
-    ctx.fillText(`${w.dev.basis ? "deviation (leader over lagger, less basis)" : "leader over lagger"} and the gains, bps${w.threshold != null ? ` (dashed: threshold ${w.threshold.toFixed(1)}; an open needs both gains past it)` : ""}`, 0, 0); ctx.restore();
+    const gateNote = w.impulse
+      ? (w.impulse.frac > 0
+          ? `; impulse bar max(${w.impulse.min}, ${w.impulse.frac} x |deviation|), the curve that rises with it`
+          : `; impulse bar ${w.impulse.min}`)
+      : "";
+    ctx.fillText(`${w.dev.basis ? "deviation (leader over lagger, less basis)" : "leader over lagger"} and the gains, bps${w.threshold != null ? ` (dashed: threshold ${w.threshold.toFixed(1)}; an open needs both gains past it${gateNote})` : ""}`, 0, 0); ctx.restore();
     }
 
     // ---- rubber band ----
