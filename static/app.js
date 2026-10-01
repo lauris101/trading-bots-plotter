@@ -1757,7 +1757,6 @@
     if ($("instrument").value !== before) { await loadEvents(); jumpLatest(); }
   };
   $("span").onchange = () => void load();
-  $("bpspane").onchange = () => requestDraw();
   // A derived line only: rebuild from the window already fetched, and keep
   // the zoom -- changing the half-life is looking harder at the same place.
   const rebuildDerived = () => {
