@@ -1175,11 +1175,14 @@
   // height it got, and because everything it was for reads better in
   // price: a decision is "will the landing beat what it has to pay", and
   // both of those are prices. They are drawn on this pane instead.
+  /// The decision ribbon's height, and the gap under it.
+  const RIB_H = 15, RIB_GAP = 4;
   function panes() {
-    const ph = Math.max(50, H - M.t - M.b);
+    const ph = Math.max(50, H - M.t - M.b - RIB_H - RIB_GAP);
     return {
-      price: { top: M.t, h: ph },
-      bps: { top: M.t + ph, h: 0 },
+      ribbon: { top: M.t, h: RIB_H },
+      price: { top: M.t + RIB_H + RIB_GAP, h: ph },
+      bps: { top: M.t + RIB_H + RIB_GAP + ph, h: 0 },
       left: M.l, w: Math.max(10, W - M.l - M.r),
     };
   }
@@ -1275,6 +1278,71 @@
    *  have gone through, red where the deviation was there but the impulse
    *  refused it. Runs of consecutive samples become one band, so a stretch
    *  reads as a stretch. Drawn under everything else in both panes. */
+  /** Every instant's verdict as a strip above the price, so "when did this
+   *  become tradable" is answered without reading a price scale at all.
+   *  The threshold is a fraction of a percent, which on a price axis is a
+   *  hair's width; here each state gets the full height of the band and
+   *  names itself whenever the run is wide enough for the words. */
+  const RIBBON = {
+    "1":  ["#3fb950", "gate clear"],
+    "2":  ["#d29922", "hold"],
+    "-1": ["#f85149", "impulse refused"],
+    "0":  ["#222b36", "below threshold"],
+  };
+  function paintRibbon(P, v, w) {
+    const pane = P.ribbon;
+    ctx.fillStyle = "#0f141b";
+    ctx.fillRect(P.left, pane.top, P.w, pane.h);
+    const d = w.dev;
+    if (!d.gate || !d.t.length) {
+      ctx.fillStyle = "#6e7681"; ctx.font = "11px ui-monospace, monospace";
+      ctx.textAlign = "left"; ctx.textBaseline = "middle";
+      ctx.fillText("no decision recorded in this window, so no threshold to judge against", P.left + 5, pane.top + pane.h / 2);
+      return;
+    }
+    let i0 = lowerBound(d.t, v.x0); if (i0 > 0) i0--;
+    const i1 = Math.min(d.t.length - 1, lowerBound(d.t, v.x1));
+    ctx.save();
+    ctx.beginPath(); ctx.rect(P.left, pane.top, P.w, pane.h); ctx.clip();
+    ctx.font = "10px ui-monospace, monospace";
+    ctx.textBaseline = "middle";
+    let i = i0;
+    while (i <= i1) {
+      const want = d.gate[i];
+      let j = i;
+      while (j + 1 <= i1 && d.gate[j + 1] === want) j++;
+      const [color, label] = RIBBON[String(want)] ?? RIBBON["0"];
+      const x0 = Math.max(P.left, xPx(P, d.t[i], v));
+      const x1 = Math.min(P.left + P.w, j + 1 < d.t.length ? xPx(P, d.t[j + 1], v) : P.left + P.w);
+      const wpx = Math.max(1, x1 - x0);
+      ctx.fillStyle = color;
+      ctx.fillRect(x0, pane.top, wpx, pane.h);
+      // Only write the word when it fits; a sliver stays a sliver.
+      const need = ctx.measureText(label).width + 8;
+      if (wpx >= need) {
+        ctx.fillStyle = want === 0 ? "#8b98a9" : "#0b0e13";
+        ctx.textAlign = "center";
+        ctx.fillText(label, x0 + wpx / 2, pane.top + pane.h / 2);
+      }
+      i = j + 1;
+    }
+    // Where an order actually went out, so the verdict and the act can be
+    // compared: a notch on the ribbon at each open.
+    ctx.fillStyle = "#ffffff";
+    for (const r of w.recorded ?? []) {
+      if (r.t < v.x0 || r.t > v.x1) continue;
+      const x = xPx(P, r.t, v);
+      ctx.beginPath();
+      ctx.moveTo(x, pane.top + pane.h);
+      ctx.lineTo(x - 4, pane.top + pane.h - 6);
+      ctx.lineTo(x + 4, pane.top + pane.h - 6);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+    ctx.strokeStyle = "#2a3341"; ctx.lineWidth = 1;
+    ctx.strokeRect(P.left + 0.5, pane.top + 0.5, P.w - 1, pane.h - 1);
+  }
+
   function paintGate(P, pane, v, d) {
     if (!d.gate || state.hidden.has("gate:overlay")) return;
     let i0 = lowerBound(d.t, v.x0); if (i0 > 0) i0--;
@@ -1331,6 +1399,7 @@
     // The gate first of all: where an open would have gone through, as a
     // band across the whole pane, under the quotes and the markers.
     paintGate(P, P.price, v, w.dev);
+    paintRibbon(P, v, w);
     // Decouple holds as shaded spans: opens were held from the strike that
     // tripped it to the recorded end. Background, under everything.
     for (const h of w.holds ?? []) {
