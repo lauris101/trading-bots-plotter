@@ -761,28 +761,6 @@
     // fixed numbers under lag.mode fixed) and the lag model's measured
     // ones, which the bot records in both modes. Older records carry no
     // landing; the fixed one is rebuilt from the decision's inputs.
-    // What the BOT recorded at each open, as against what this page
-    // reconstructs. The reconstruction is built from the scraper's quotes,
-    // a different host on different sockets, so it cannot resolve a
-    // decision taken by a fraction of a bp -- MET 2026-10-01 20:14:02
-    // cleared its threshold by 0.12 bps (gain 31.757 against 31.64) and
-    // the reconstruction lands just under, painting nothing where an order
-    // plainly went out. Worse, the bot had a lagger quote 242 ms stale at
-    // that moment while this page draws the book as the scraper saw it.
-    // Plotting the bot's own gain and threshold makes the disagreement
-    // visible instead of looking like a missing band.
-    const recorded = [];
-    for (const e of w.events) {
-      if (e.kind !== "sent" || e.reduce_only || !e.decision) continue;
-      const g = Number(e.decision.gain_bps), th = Number(e.decision.threshold_bps);
-      if (!Number.isFinite(g) || !Number.isFinite(th)) continue;
-      recorded.push({
-        t: e.t, gain: g, threshold: th,
-        raw: Number(e.decision.raw_gain_bps),
-        laggerAge: Number(e.decision.lagger_age_ms),
-        cloid: e.cloid,
-      });
-    }
     const landings = [];
     for (const e of w.events) {
       if (e.kind !== "sent" || e.reduce_only || !e.side || !e.decision) continue;
@@ -943,42 +921,10 @@
         const value = ema[k] + (heldAt[k] - ema[k]) * (1 - Math.pow(0.5, dt / impulseHl));
         return value > 0 ? 10000 * (heldAt[k] / value - 1) : 0;
       };
-      // The gate as a PRICE corridor around the leader's EMA: the mid has
-      // to stand at least `needed` bps off the EMA for the impulse to
-      // clear, so the band is ema x (1 +/- needed/10000) and the gate fires
-      // exactly where the leader's own line leaves it. Reading a crossing
-      // is easier than reading a spike against a moving dashed bar, and
-      // the width shows at a glance how far out of reach the bar was.
-      //
-      // `needed` follows the deviation, which is sampled on its own clock,
-      // so it is looked up per EMA point rather than assumed aligned.
-      let band = null;
-      if (dev.t.length) {
-        const bhiArr = new Float64Array(leader.length), bloArr = new Float64Array(leader.length);
-        // The floor on its own, so the chart can show WHICH half of the
-        // max() is binding. Changing `min` moves nothing wherever the
-        // fraction already exceeds it, which is most of any interesting
-        // stretch, and without both edges drawn that reads as the control
-        // being broken rather than as the floor being irrelevant there.
-        const fhiArr = new Float64Array(leader.length), floArr = new Float64Array(leader.length);
-        for (let i = 0; i < leader.length; i++) {
-          let k = lowerBound(dev.t, t[i]);
-          if (k >= dev.t.length || dev.t[k] > t[i]) k--;
-          const dv = k >= 0 ? dev.v[k] : 0;
-          const need = Math.max(impulseMin, impulseFrac * Math.abs(dv)) / 10000;
-          bhiArr[i] = ema[i] * (1 + need);
-          bloArr[i] = ema[i] * (1 - need);
-          fhiArr[i] = ema[i] * (1 + impulseMin / 10000);
-          floArr[i] = ema[i] * (1 - impulseMin / 10000);
-        }
-        // Only worth drawing when the two can differ.
-        const floors = impulseFrac > 0 && impulseMin > 0 ? { hi: fhiArr, lo: floArr } : null;
-        band = { t, hi: bhiArr, lo: bloArr, floors };
-      }
-      impulse = { t, v, hl: impulseHl, min: impulseMin, frac: impulseFrac, at, band };
+      impulse = { t, v, hl: impulseHl, min: impulseMin, frac: impulseFrac, at };
       // The leader's EMA itself, on the price pane: the level the impulse
       // is measured from.
-      lines.push({ id: "binance:ema", name: `binance mid ema ${impulseHl} ms (band = gate; dotted = the ${impulseMin} bps floor)`, color: "#8fb8ff", width: 1.5, dash: [8, 3], t, v: ema });
+      lines.push({ id: "binance:ema", name: `binance mid ema ${impulseHl} ms (impulse)`, color: "#8fb8ff", width: 1.5, dash: [8, 3], t, v: ema });
     }
     const last = [...w.events].reverse().find((e) => e.decision?.threshold_bps != null);
     const threshold = last ? last.decision.threshold_bps : null;
@@ -1000,11 +946,6 @@
       dev.gain[k] = Math.sign(dev.s[k]) * (rho * Math.abs(dev.s[k]) - dev.half[k]);
       dev.rawGain[k] = Math.sign(dev.v[k]) * (rho * Math.abs(dev.v[k]) - dev.half[k]);
     }
-    // Before the gate, because a hold is one of the gates: gains and
-    // impulse can both be clear while the bot is holding and sends
-    // nothing, and a green column there would be a lie.
-    const holds = holdSpans(w.conditions ?? []);
-    const heldAtTime = (when) => holds.some((h) => when >= h.t0 && when < h.t1);
     if (impulse && threshold != null) {
       dev.gate = new Int8Array(dev.t.length);
       for (let k = 0; k < dev.t.length; k++) {
@@ -1013,63 +954,18 @@
         if (Math.abs(dev.gain[k]) <= threshold || Math.abs(dev.rawGain[k]) <= threshold || Math.sign(dev.gain[k]) !== Math.sign(dev.rawGain[k])) continue;
         const gap = impulse.at(dev.t[k]) * Math.sign(dv);
         const needed = Math.max(impulse.min, impulse.frac * Math.abs(dv));
-        // 1 everything clear, -1 the impulse refused it, 2 everything
-        // clear but a hold was running.
-        if (gap < needed) dev.gate[k] = -1;
-        else dev.gate[k] = heldAtTime(dev.t[k]) ? 2 : 1;
-      }
-    }
-    // ---- the decision, in price ----
-    //
-    // The bot's test is "does the predicted landing beat what this trade
-    // has to pay". Both sides of that are prices, so they belong on the
-    // price pane rather than as two bps curves in a pane too short to read.
-    //
-    //   landing  the lagger's mid moved by rho x the raw deviation: where
-    //            the lagger is expected to be one lag from now.
-    //   needed   the touch the order would cross, moved by the threshold it
-    //            must clear. The side follows the deviation: a leader above
-    //            the lagger is a buy, which crosses the ask.
-    //
-    // Where the landing line is beyond the needed line, the trade pays.
-    // That is the same comparison the gains made against the dashed
-    // threshold, with nothing left to convert in your head.
-    if (dev.t.length && threshold != null) {
-      // The lagger book standing at an instant: the last quote at or before
-      // it, which is what the bot would have been holding.
-      const laggerTs = lagger.map((q) => q.t);
-      const laggerAt = (when) => {
-        let k = lowerBound(laggerTs, when);
-        if (k >= lagger.length || laggerTs[k] > when) k--;
-        return k >= 0 ? lagger[k] : null;
-      };
-      const lt = new Float64Array(dev.t.length), lv = new Float64Array(dev.t.length);
-      const nt = new Float64Array(dev.t.length), nv = new Float64Array(dev.t.length);
-      let n = 0;
-      for (let k = 0; k < dev.t.length; k++) {
-        const q = laggerAt(dev.t[k]);
-        if (!q) continue;
-        const mid = (q.bid + q.ask) / 2;
-        const raw = dev.v[k] / 10000;
-        const buy = dev.v[k] > 0;
-        lt[n] = dev.t[k]; lv[n] = mid * (1 + rho * raw);
-        nt[n] = dev.t[k];
-        nv[n] = buy ? q.ask * (1 + threshold / 10000) : q.bid * (1 - threshold / 10000);
-        n++;
-      }
-      if (n > 1) {
-        lines.push({ id: "decision:landing", name: "predicted landing (lagger mid + rho x deviation)", color: "#7ee787", width: 1.3, t: lt.subarray(0, n), v: lv.subarray(0, n) });
-        lines.push({ id: "decision:needed", name: `what it must beat (touch + ${threshold.toFixed(1)} bps threshold)`, color: "#f0883e", width: 1.3, dash: [5, 4], t: nt.subarray(0, n), v: nv.subarray(0, n) });
+        dev.gate[k] = gap >= needed ? 1 : -1;
       }
     }
     const pad = Number.isFinite(lo) && hi > lo ? (hi - lo) * 0.06 : Math.abs(lo || 1) * 0.001;
     const full = { x0: from, x1: to, y0: Number.isFinite(lo) ? lo - pad : 0, y1: Number.isFinite(hi) ? hi + pad : 1 };
     // Time-anchored, not price-anchored: a hold has no price, and what it
     // explains is the ABSENCE of orders in that stretch.
+    const holds = holdSpans(w.conditions ?? []);
     const conditions = (w.conditions ?? [])
       .filter((c) => CONDITION[c.kind])
       .map((c) => ({ t: c.t, kind: c.kind, details: c.details ?? {} }));
-    return { inst, lines, marks, dev, threshold, rho, full, conditions, holds, slope, impulse, breakevens, landings, protections, recorded };
+    return { inst, lines, marks, dev, threshold, rho, full, conditions, holds, slope, impulse, breakevens, landings, protections };
   }
 
   /** The conditions worth a rule on the chart, and how they are drawn. A
@@ -1096,13 +992,6 @@
       } else if (c.kind === "decouple_hold_end" && open) {
         spans.push({ t0: open.t, t1: c.t, kind: open.details?.kind, recorded: true });
         open = null;
-      } else if (c.kind === "shock_hold" || c.kind === "no_follow_hold") {
-        // These two have no `_end` event, so their length is the hold_ms
-        // they were raised with. They suppress opens exactly as a decouple
-        // hold does, and leaving them out made a window read "all clear"
-        // while the bot was holding.
-        const ms = Number(c.details?.hold_ms) || 0;
-        if (ms > 0) spans.push({ t0: c.t, t1: c.t + ms, kind: c.kind.replace("_hold", ""), recorded: false });
       }
     }
     if (open) spans.push({ t0: open.t, t1: open.t + (Number(open.details?.hold_ms) || 60000), kind: open.details?.kind, recorded: false });
@@ -1142,8 +1031,7 @@
             { id: "leader:impulse", name: `leader impulse ${state.win.impulse.hl} ms (bps${state.win.impulse.min > 0 ? `, gate ${state.win.impulse.min}` : ""})`, color: IMPULSE_COLOR, kind: "line" },
             { id: "dev:gain", name: `gain, smoothed (${Number($("ema").value) || 8} ms ema): rho x deviation - half spread, the trigger`, color: "#ffd166", kind: "line" },
             { id: "dev:rawgain", name: "gain, raw books", color: "#ff9f43", kind: "line" },
-            ...(state.win.recorded?.length ? [{ id: "decision:recorded", name: "the bot's own reading at each open: dot = its gain, bar = its threshold. This page reconstructs the rest from the scraper's feed, so a dot above its bar with no green band under it is the two feeds disagreeing, not a missing gate", color: GREEN, kind: "line" }] : []),
-            ...(state.win.dev.gate ? [{ id: "gate:overlay", name: "gate bands: GREEN every gate clear (both gains past the threshold, impulse let it through, no hold running) \u2014 the bot would open here; AMBER clear but a hold was running; RED the impulse refused it", color: GREEN, kind: "line" }] : []),
+            ...(state.win.dev.gate ? [{ id: "gate:overlay", name: "gate bands: green both gains cleared the threshold and the impulse let it through, red the impulse refused it", color: GREEN, kind: "line" }] : []),
           ]
         : []),
     ];
@@ -1171,18 +1059,23 @@
   // Room on the right for the slope's own axis in the lower pane.
   const M = { l: 74, r: 54, t: 10, b: 30, gap: 26 };
   let W = 0, H = 0; // css pixels
-  // One pane. The bps pane went because nothing in it could be read at the
-  // height it got, and because everything it was for reads better in
-  // price: a decision is "will the landing beat what it has to pay", and
-  // both of those are prices. They are drawn on this pane instead.
-  /// The decision ribbon's height, and the gap under it.
-  const RIB_H = 15, RIB_GAP = 4;
+  // The lower (bps) pane is a switch, off by default: the price pane then
+  // takes the whole height and nothing of the lower pane is drawn or hit.
+  const showBps = () => $("bpspane").checked;
   function panes() {
-    const ph = Math.max(50, H - M.t - M.b - RIB_H - RIB_GAP);
+    if (!showBps()) {
+      const ph = Math.max(50, H - M.t - M.b);
+      return {
+        price: { top: M.t, h: ph },
+        bps: { top: M.t + ph, h: 0 },
+        left: M.l, w: Math.max(10, W - M.l - M.r),
+      };
+    }
+    const inner = H - M.t - M.b - M.gap;
+    const ph = Math.max(50, inner * 0.7);
     return {
-      ribbon: { top: M.t, h: RIB_H },
-      price: { top: M.t + RIB_H + RIB_GAP, h: ph },
-      bps: { top: M.t + RIB_H + RIB_GAP + ph, h: 0 },
+      price: { top: M.t, h: ph },
+      bps: { top: M.t + ph + M.gap, h: Math.max(30, inner - ph) },
       left: M.l, w: Math.max(10, W - M.l - M.r),
     };
   }
@@ -1278,80 +1171,11 @@
    *  have gone through, red where the deviation was there but the impulse
    *  refused it. Runs of consecutive samples become one band, so a stretch
    *  reads as a stretch. Drawn under everything else in both panes. */
-  /** Every instant's verdict as a strip above the price, so "when did this
-   *  become tradable" is answered without reading a price scale at all.
-   *  The threshold is a fraction of a percent, which on a price axis is a
-   *  hair's width; here each state gets the full height of the band and
-   *  names itself whenever the run is wide enough for the words. */
-  const RIBBON = {
-    "1":  ["#3fb950", "gate clear"],
-    "2":  ["#d29922", "hold"],
-    "-1": ["#f85149", "impulse refused"],
-    "0":  ["#222b36", "below threshold"],
-  };
-  function paintRibbon(P, v, w) {
-    const pane = P.ribbon;
-    ctx.fillStyle = "#0f141b";
-    ctx.fillRect(P.left, pane.top, P.w, pane.h);
-    const d = w.dev;
-    if (!d.gate || !d.t.length) {
-      ctx.fillStyle = "#6e7681"; ctx.font = "11px ui-monospace, monospace";
-      ctx.textAlign = "left"; ctx.textBaseline = "middle";
-      ctx.fillText("no decision recorded in this window, so no threshold to judge against", P.left + 5, pane.top + pane.h / 2);
-      return;
-    }
-    let i0 = lowerBound(d.t, v.x0); if (i0 > 0) i0--;
-    const i1 = Math.min(d.t.length - 1, lowerBound(d.t, v.x1));
-    ctx.save();
-    ctx.beginPath(); ctx.rect(P.left, pane.top, P.w, pane.h); ctx.clip();
-    ctx.font = "10px ui-monospace, monospace";
-    ctx.textBaseline = "middle";
-    let i = i0;
-    while (i <= i1) {
-      const want = d.gate[i];
-      let j = i;
-      while (j + 1 <= i1 && d.gate[j + 1] === want) j++;
-      const [color, label] = RIBBON[String(want)] ?? RIBBON["0"];
-      const x0 = Math.max(P.left, xPx(P, d.t[i], v));
-      const x1 = Math.min(P.left + P.w, j + 1 < d.t.length ? xPx(P, d.t[j + 1], v) : P.left + P.w);
-      const wpx = Math.max(1, x1 - x0);
-      ctx.fillStyle = color;
-      ctx.fillRect(x0, pane.top, wpx, pane.h);
-      // Only write the word when it fits; a sliver stays a sliver.
-      const need = ctx.measureText(label).width + 8;
-      if (wpx >= need) {
-        ctx.fillStyle = want === 0 ? "#8b98a9" : "#0b0e13";
-        ctx.textAlign = "center";
-        ctx.fillText(label, x0 + wpx / 2, pane.top + pane.h / 2);
-      }
-      i = j + 1;
-    }
-    // Where an order actually went out, so the verdict and the act can be
-    // compared: a notch on the ribbon at each open.
-    ctx.fillStyle = "#ffffff";
-    for (const r of w.recorded ?? []) {
-      if (r.t < v.x0 || r.t > v.x1) continue;
-      const x = xPx(P, r.t, v);
-      ctx.beginPath();
-      ctx.moveTo(x, pane.top + pane.h);
-      ctx.lineTo(x - 4, pane.top + pane.h - 6);
-      ctx.lineTo(x + 4, pane.top + pane.h - 6);
-      ctx.closePath(); ctx.fill();
-    }
-    ctx.restore();
-    ctx.strokeStyle = "#2a3341"; ctx.lineWidth = 1;
-    ctx.strokeRect(P.left + 0.5, pane.top + 0.5, P.w - 1, pane.h - 1);
-  }
-
   function paintGate(P, pane, v, d) {
     if (!d.gate || state.hidden.has("gate:overlay")) return;
     let i0 = lowerBound(d.t, v.x0); if (i0 > 0) i0--;
     const i1 = Math.min(d.t.length - 1, lowerBound(d.t, v.x1));
-    for (const [want, color] of [
-      [1, "rgba(63,185,80,0.22)"],   // every gate clear: the bot would open
-      [2, "rgba(210,153,34,0.20)"],  // clear, but a hold was running
-      [-1, "rgba(248,81,73,0.18)"],  // the impulse refused it
-    ]) {
+    for (const [want, color] of [[1, "rgba(63,185,80,0.22)"], [-1, "rgba(248,81,73,0.18)"]]) {
       ctx.fillStyle = color;
       let i = i0;
       while (i <= i1) {
@@ -1376,12 +1200,13 @@
     ctx.textBaseline = "middle";
 
     // panes' background and grid
-    for (const pane of [P.price]) { ctx.fillStyle = "#0f141b"; ctx.fillRect(P.left, pane.top, P.w, pane.h); }
+    for (const pane of showBps() ? [P.price, P.bps] : [P.price]) { ctx.fillStyle = "#0f141b"; ctx.fillRect(P.left, pane.top, P.w, pane.h); }
     const xt = timeTicks(v, P.w);
     ctx.strokeStyle = "#1f2733"; ctx.lineWidth = 1;
     for (const tk of xt) {
       const x = Math.round(xPx(P, tk.t, v)) + 0.5;
       ctx.beginPath(); ctx.moveTo(x, P.price.top); ctx.lineTo(x, P.price.top + P.price.h);
+      if (showBps()) { ctx.moveTo(x, P.bps.top); ctx.lineTo(x, P.bps.top + P.bps.h); }
       ctx.stroke();
     }
     ctx.fillStyle = "#8b98a9"; ctx.textAlign = "center";
@@ -1399,7 +1224,6 @@
     // The gate first of all: where an open would have gone through, as a
     // band across the whole pane, under the quotes and the markers.
     paintGate(P, P.price, v, w.dev);
-    paintRibbon(P, v, w);
     // Decouple holds as shaded spans: opens were held from the strike that
     // tripped it to the recorded end. Background, under everything.
     for (const h of w.holds ?? []) {
@@ -1529,51 +1353,6 @@
       }
       ctx.textBaseline = "middle";
     }
-    // The impulse corridor, under the lines so they stay readable: where
-    // the leader's mid is inside this, the gate is shut however wide the
-    // deviation has opened.
-    const band = w.impulse?.band;
-    if (band && !state.hidden.has("leader:impulse") && band.t.length) {
-      let i0 = lowerBound(band.t, v.x0); if (i0 > 0) i0--;
-      const i1 = Math.min(band.t.length - 1, lowerBound(band.t, v.x1));
-      ctx.save();
-      ctx.beginPath(); ctx.rect(P.left, P.price.top, P.w, P.price.h); ctx.clip();
-      ctx.fillStyle = IMPULSE_COLOR; ctx.globalAlpha = 0.1;
-      ctx.beginPath();
-      let px = xPx(P, band.t[i0], v), py = yPx(P.price, band.hi[i0], v.y0, v.y1);
-      ctx.moveTo(px, py);
-      for (let i = i0 + 1; i <= i1; i++) {
-        const nx = xPx(P, band.t[i], v), ny = yPx(P.price, band.hi[i], v.y0, v.y1);
-        ctx.lineTo(nx, py); ctx.lineTo(nx, ny); px = nx; py = ny;
-      }
-      ctx.lineTo(P.left + P.w, py);
-      py = yPx(P.price, band.lo[i1], v.y0, v.y1);
-      ctx.lineTo(P.left + P.w, py);
-      for (let i = i1; i > i0; i--) {
-        const nx = xPx(P, band.t[i], v), ny = yPx(P.price, band.lo[i - 1], v.y0, v.y1);
-        ctx.lineTo(nx, py); ctx.lineTo(nx, ny); py = ny;
-      }
-      ctx.closePath(); ctx.fill();
-      // The floor, where it is not the whole story: the band edge standing
-      // outside this line is the fraction binding, and `min` doing nothing
-      // there however it is set.
-      if (band.floors) {
-        ctx.strokeStyle = IMPULSE_COLOR; ctx.lineWidth = 1; ctx.globalAlpha = 0.55; ctx.setLineDash([2, 3]);
-        for (const edge of [band.floors.hi, band.floors.lo]) {
-          ctx.beginPath();
-          let fy = yPx(P.price, edge[i0], v.y0, v.y1);
-          ctx.moveTo(xPx(P, band.t[i0], v), fy);
-          for (let i = i0 + 1; i <= i1; i++) {
-            const nx = xPx(P, band.t[i], v), ny = yPx(P.price, edge[i], v.y0, v.y1);
-            ctx.lineTo(nx, fy); ctx.lineTo(nx, ny); fy = ny;
-          }
-          ctx.lineTo(P.left + P.w, fy);
-          ctx.stroke();
-        }
-        ctx.setLineDash([]);
-      }
-      ctx.globalAlpha = 1; ctx.restore();
-    }
     for (const l of w.lines) {
       if (state.hidden.has(l.id) || !l.t.length) continue;
       let i0 = lowerBound(l.t, v.x0); if (i0 > 0) i0--;
@@ -1655,6 +1434,110 @@
     ctx.restore();
     ctx.save(); ctx.translate(14, P.price.top + P.price.h / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillStyle = "#8b98a9"; ctx.fillText(w.inst, 0, 0); ctx.restore();
 
+    if (showBps()) {
+    // ---- bps pane: autoscaled to what is visible ----
+    let blo = -1, bhi = 1;
+    const d = w.dev;
+    if (d.t.length) {
+      let i0 = lowerBound(d.t, v.x0); if (i0 > 0) i0--;
+      const i1 = Math.min(d.t.length - 1, lowerBound(d.t, v.x1));
+      let lo = Infinity, hi = -Infinity;
+      for (let i = i0; i <= i1; i++) { if (d.v[i] < lo) lo = d.v[i]; if (d.v[i] > hi) hi = d.v[i]; }
+      if (w.threshold != null) { lo = Math.min(lo, -w.threshold); hi = Math.max(hi, w.threshold); }
+      const im = w.impulse;
+      if (im && im.t.length && !state.hidden.has("leader:impulse")) {
+        let j0 = lowerBound(im.t, v.x0); if (j0 > 0) j0--;
+        const j1 = Math.min(im.t.length - 1, lowerBound(im.t, v.x1));
+        for (let i = j0; i <= j1; i++) { if (im.v[i] < lo) lo = im.v[i]; if (im.v[i] > hi) hi = im.v[i]; }
+        if (im.min > 0) { lo = Math.min(lo, -im.min); hi = Math.max(hi, im.min); }
+      }
+      lo = Math.min(lo, 0); hi = Math.max(hi, 0);
+      if (Number.isFinite(lo) && hi > lo) { const pad = (hi - lo) * 0.08; blo = lo - pad; bhi = hi + pad; }
+    }
+    const bt = valueTicks(blo, bhi, P.bps.h, 28);
+    ctx.textAlign = "right";
+    for (const tk of bt) {
+      const y = Math.round(yPx(P.bps, tk.y, blo, bhi)) + 0.5;
+      ctx.strokeStyle = tk.y === 0 ? "#3a4656" : "#1f2733"; ctx.beginPath(); ctx.moveTo(P.left, y); ctx.lineTo(P.left + P.w, y); ctx.stroke();
+      ctx.fillStyle = "#8b98a9"; ctx.fillText(tk.label, P.left - 6, y);
+    }
+    ctx.save(); ctx.beginPath(); ctx.rect(P.left, P.bps.top, P.w, P.bps.h); ctx.clip();
+    paintGate(P, P.bps, v, w.dev);
+    if (w.threshold != null) {
+      ctx.strokeStyle = "#8b98a9"; ctx.lineWidth = 1; ctx.setLineDash([5, 4]);
+      for (const s of [w.threshold, -w.threshold]) { const y = yPx(P.bps, s, blo, bhi); ctx.beginPath(); ctx.moveTo(P.left, y); ctx.lineTo(P.left + P.w, y); ctx.stroke(); }
+      ctx.setLineDash([]);
+    }
+    if (d.t.length) {
+      let i0 = lowerBound(d.t, v.x0); if (i0 > 0) i0--;
+      const i1 = Math.min(d.t.length - 1, lowerBound(d.t, v.x1));
+      ctx.strokeStyle = "#c9d1d9"; ctx.lineWidth = 1.2; ctx.beginPath();
+      let py = yPx(P.bps, d.v[i0], blo, bhi);
+      ctx.moveTo(xPx(P, d.t[i0], v), py);
+      for (let i = i0 + 1; i <= i1; i++) { const x = xPx(P, d.t[i], v); ctx.lineTo(x, py); py = yPx(P.bps, d.v[i], blo, bhi); ctx.lineTo(x, py); }
+      ctx.lineTo(P.left + P.w, py);
+      ctx.stroke();
+      for (const [id, arr, color, width] of [["dev:rawgain", d.rawGain, "#ff9f43", 1], ["dev:gain", d.gain, "#ffd166", 1.6]]) {
+        if (!arr || state.hidden.has(id)) continue;
+        ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
+        let gy = yPx(P.bps, arr[i0], blo, bhi);
+        ctx.moveTo(xPx(P, d.t[i0], v), gy);
+        for (let i = i0 + 1; i <= i1; i++) { const x = xPx(P, d.t[i], v); ctx.lineTo(x, gy); gy = yPx(P.bps, arr[i], blo, bhi); ctx.lineTo(x, gy); }
+        ctx.lineTo(P.left + P.w, gy);
+        ctx.stroke();
+      }
+    }
+    // The leader's impulse on the same bps axis as the deviation, with the
+    // gate's threshold dashed either side of zero: an open needed the
+    // impulse past the dashed line on the deviation's side.
+    const im = w.impulse;
+    if (im && im.t.length && !state.hidden.has("leader:impulse")) {
+      if (im.min > 0) {
+        ctx.strokeStyle = IMPULSE_COLOR; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.globalAlpha = 0.7;
+        for (const s of [im.min, -im.min]) { const y = yPx(P.bps, s, blo, bhi); ctx.beginPath(); ctx.moveTo(P.left, y); ctx.lineTo(P.left + P.w, y); ctx.stroke(); }
+        ctx.setLineDash([]); ctx.globalAlpha = 1;
+      }
+      let i0 = lowerBound(im.t, v.x0); if (i0 > 0) i0--;
+      const i1 = Math.min(im.t.length - 1, lowerBound(im.t, v.x1));
+      ctx.strokeStyle = IMPULSE_COLOR; ctx.lineWidth = 1.2; ctx.beginPath();
+      // Spikes, not steps: the impulse is a reading AT each quote, and what
+      // it does between quotes is decay, which the line does not pretend to
+      // draw.
+      for (let i = i0; i <= i1; i++) { const x = xPx(P, im.t[i], v); ctx.moveTo(x, yPx(P.bps, 0, blo, bhi)); ctx.lineTo(x, yPx(P.bps, im.v[i], blo, bhi)); }
+      ctx.stroke();
+    }
+    // The lagger's slope on its own (right-hand) axis, autoscaled to what is
+    // visible and always including zero, so the sign reads at a glance.
+    let slopeAxis = null;
+    const sl = w.slope;
+    if (sl && sl.t.length && !state.hidden.has("slope:line")) {
+      let i0 = lowerBound(sl.t, v.x0); if (i0 > 0) i0--;
+      const i1 = Math.min(sl.t.length - 1, lowerBound(sl.t, v.x1));
+      let lo = 0, hi = 0;
+      for (let i = i0; i <= i1; i++) { if (sl.v[i] < lo) lo = sl.v[i]; if (sl.v[i] > hi) hi = sl.v[i]; }
+      if (hi <= lo) { lo = -1; hi = 1; }
+      const pad = (hi - lo) * 0.08;
+      slopeAxis = { lo: lo - pad, hi: hi + pad };
+      ctx.strokeStyle = SLOPE_COLOR; ctx.lineWidth = 1.2; ctx.globalAlpha = 0.9; ctx.beginPath();
+      let py = yPx(P.bps, sl.v[i0], slopeAxis.lo, slopeAxis.hi);
+      ctx.moveTo(xPx(P, sl.t[i0], v), py);
+      for (let i = i0 + 1; i <= i1; i++) { const x = xPx(P, sl.t[i], v); ctx.lineTo(x, py); py = yPx(P.bps, sl.v[i], slopeAxis.lo, slopeAxis.hi); ctx.lineTo(x, py); }
+      ctx.lineTo(P.left + P.w, py);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+    if (slopeAxis) {
+      // Right-axis ticks for the slope, in the slope's colour.
+      ctx.textAlign = "left"; ctx.fillStyle = SLOPE_COLOR;
+      for (const tk of valueTicks(slopeAxis.lo, slopeAxis.hi, P.bps.h, 28)) {
+        const y = Math.round(yPx(P.bps, tk.y, slopeAxis.lo, slopeAxis.hi)) + 0.5;
+        ctx.fillText(tk.label, P.left + P.w + 4, y);
+      }
+    }
+    ctx.save(); ctx.translate(14, P.bps.top + P.bps.h / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillStyle = "#8b98a9";
+    ctx.fillText(`${w.dev.basis ? "deviation (leader over lagger, less basis)" : "leader over lagger"} and the gains, bps${w.threshold != null ? ` (dashed: threshold ${w.threshold.toFixed(1)}; an open needs both gains past it)` : ""}`, 0, 0); ctx.restore();
+    }
 
     // ---- rubber band ----
     if (state.drag && state.drag.moved) {
@@ -1826,6 +1709,7 @@
     if ($("instrument").value !== before) { await loadEvents(); jumpLatest(); }
   };
   $("span").onchange = () => void load();
+  $("bpspane").onchange = () => requestDraw();
   // A derived line only: rebuild from the window already fetched, and keep
   // the zoom -- changing the half-life is looking harder at the same place.
   const rebuildDerived = () => {

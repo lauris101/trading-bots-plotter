@@ -98,28 +98,17 @@ async fn main() -> anyhow::Result<()> {
             .map(|u| u.trim_end_matches('/').to_owned())
             .filter(|u| !u.is_empty()),
     };
-    // The page and its script are compiled in, so a redeploy is the only
-    // way they change -- and they changed without being sent any validator
-    // at all: no ETag, no Last-Modified, no Cache-Control. A browser is
-    // free to reuse a heuristically cached copy indefinitely under those
-    // conditions, and did, which hides a deploy behind a stale script and
-    // makes a new feature look broken rather than unfetched. These are
-    // small and local; correctness beats the round trip.
-    const NO_STORE: (header::HeaderName, &str) = (header::CACHE_CONTROL, "no-store");
-    let js = |body: &'static str| {
-        (
-            [
-                (header::CONTENT_TYPE, "application/javascript"),
-                (NO_STORE.0, NO_STORE.1),
-            ],
-            body,
-        )
-    };
     let router = Router::new()
-        .route("/", get(|| async { ([NO_STORE], Html(INDEX_HTML)) }))
-        .route("/app.js", get(move || async move { js(APP_JS) }))
-        .route("/live", get(|| async { ([NO_STORE], Html(LIVE_HTML)) }))
-        .route("/live.js", get(move || async move { js(LIVE_JS) }))
+        .route("/", get(|| async { Html(INDEX_HTML) }))
+        .route(
+            "/app.js",
+            get(|| async { ([(header::CONTENT_TYPE, "application/javascript")], APP_JS) }),
+        )
+        .route("/live", get(|| async { Html(LIVE_HTML) }))
+        .route(
+            "/live.js",
+            get(|| async { ([(header::CONTENT_TYPE, "application/javascript")], LIVE_JS) }),
+        )
         .route("/api/live/setup", get(live_setup))
         .route("/api/bots", get(bots))
         .route("/api/orders", get(orders))
