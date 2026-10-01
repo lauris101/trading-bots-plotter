@@ -978,6 +978,11 @@
       dev.gain[k] = Math.sign(dev.s[k]) * (rho * Math.abs(dev.s[k]) - dev.half[k]);
       dev.rawGain[k] = Math.sign(dev.v[k]) * (rho * Math.abs(dev.v[k]) - dev.half[k]);
     }
+    // Before the gate, because a hold is one of the gates: gains and
+    // impulse can both be clear while the bot is holding and sends
+    // nothing, and a green column there would be a lie.
+    const holds = holdSpans(w.conditions ?? []);
+    const heldAtTime = (when) => holds.some((h) => when >= h.t0 && when < h.t1);
     if (impulse && threshold != null) {
       dev.gate = new Int8Array(dev.t.length);
       for (let k = 0; k < dev.t.length; k++) {
@@ -986,14 +991,16 @@
         if (Math.abs(dev.gain[k]) <= threshold || Math.abs(dev.rawGain[k]) <= threshold || Math.sign(dev.gain[k]) !== Math.sign(dev.rawGain[k])) continue;
         const gap = impulse.at(dev.t[k]) * Math.sign(dv);
         const needed = Math.max(impulse.min, impulse.frac * Math.abs(dv));
-        dev.gate[k] = gap >= needed ? 1 : -1;
+        // 1 everything clear, -1 the impulse refused it, 2 everything
+        // clear but a hold was running.
+        if (gap < needed) dev.gate[k] = -1;
+        else dev.gate[k] = heldAtTime(dev.t[k]) ? 2 : 1;
       }
     }
     const pad = Number.isFinite(lo) && hi > lo ? (hi - lo) * 0.06 : Math.abs(lo || 1) * 0.001;
     const full = { x0: from, x1: to, y0: Number.isFinite(lo) ? lo - pad : 0, y1: Number.isFinite(hi) ? hi + pad : 1 };
     // Time-anchored, not price-anchored: a hold has no price, and what it
     // explains is the ABSENCE of orders in that stretch.
-    const holds = holdSpans(w.conditions ?? []);
     const conditions = (w.conditions ?? [])
       .filter((c) => CONDITION[c.kind])
       .map((c) => ({ t: c.t, kind: c.kind, details: c.details ?? {} }));
@@ -1024,6 +1031,13 @@
       } else if (c.kind === "decouple_hold_end" && open) {
         spans.push({ t0: open.t, t1: c.t, kind: open.details?.kind, recorded: true });
         open = null;
+      } else if (c.kind === "shock_hold" || c.kind === "no_follow_hold") {
+        // These two have no `_end` event, so their length is the hold_ms
+        // they were raised with. They suppress opens exactly as a decouple
+        // hold does, and leaving them out made a window read "all clear"
+        // while the bot was holding.
+        const ms = Number(c.details?.hold_ms) || 0;
+        if (ms > 0) spans.push({ t0: c.t, t1: c.t + ms, kind: c.kind.replace("_hold", ""), recorded: false });
       }
     }
     if (open) spans.push({ t0: open.t, t1: open.t + (Number(open.details?.hold_ms) || 60000), kind: open.details?.kind, recorded: false });
@@ -1063,7 +1077,7 @@
             { id: "leader:impulse", name: `leader impulse ${state.win.impulse.hl} ms (bps${state.win.impulse.min > 0 ? `, gate ${state.win.impulse.min}` : ""})`, color: IMPULSE_COLOR, kind: "line" },
             { id: "dev:gain", name: `gain, smoothed (${Number($("ema").value) || 8} ms ema): rho x deviation - half spread, the trigger`, color: "#ffd166", kind: "line" },
             { id: "dev:rawgain", name: "gain, raw books", color: "#ff9f43", kind: "line" },
-            ...(state.win.dev.gate ? [{ id: "gate:overlay", name: "gate bands: green both gains cleared the threshold and the impulse let it through, red the impulse refused it", color: GREEN, kind: "line" }] : []),
+            ...(state.win.dev.gate ? [{ id: "gate:overlay", name: "gate bands: GREEN every gate clear (both gains past the threshold, impulse let it through, no hold running) \u2014 the bot would open here; AMBER clear but a hold was running; RED the impulse refused it", color: GREEN, kind: "line" }] : []),
           ]
         : []),
     ];
@@ -1207,7 +1221,11 @@
     if (!d.gate || state.hidden.has("gate:overlay")) return;
     let i0 = lowerBound(d.t, v.x0); if (i0 > 0) i0--;
     const i1 = Math.min(d.t.length - 1, lowerBound(d.t, v.x1));
-    for (const [want, color] of [[1, "rgba(63,185,80,0.22)"], [-1, "rgba(248,81,73,0.18)"]]) {
+    for (const [want, color] of [
+      [1, "rgba(63,185,80,0.22)"],   // every gate clear: the bot would open
+      [2, "rgba(210,153,34,0.20)"],  // clear, but a hold was running
+      [-1, "rgba(248,81,73,0.18)"],  // the impulse refused it
+    ]) {
       ctx.fillStyle = color;
       let i = i0;
       while (i <= i1) {
