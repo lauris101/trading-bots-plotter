@@ -98,17 +98,28 @@ async fn main() -> anyhow::Result<()> {
             .map(|u| u.trim_end_matches('/').to_owned())
             .filter(|u| !u.is_empty()),
     };
+    // The page and both scripts are compiled in, so a redeploy is the only
+    // thing that changes them -- and they went out with no ETag, no
+    // Last-Modified and no Cache-Control. With no validator at all a
+    // browser may reuse a heuristically cached copy for as long as it
+    // likes, and did: several deploys reached the server and none of them
+    // reached the page. They are small and served over the LAN, so being
+    // right beats saving the round trip.
+    const NO_STORE: (header::HeaderName, &str) = (header::CACHE_CONTROL, "no-store");
+    let js = |body: &'static str| {
+        (
+            [
+                (header::CONTENT_TYPE, "application/javascript"),
+                (NO_STORE.0, NO_STORE.1),
+            ],
+            body,
+        )
+    };
     let router = Router::new()
-        .route("/", get(|| async { Html(INDEX_HTML) }))
-        .route(
-            "/app.js",
-            get(|| async { ([(header::CONTENT_TYPE, "application/javascript")], APP_JS) }),
-        )
-        .route("/live", get(|| async { Html(LIVE_HTML) }))
-        .route(
-            "/live.js",
-            get(|| async { ([(header::CONTENT_TYPE, "application/javascript")], LIVE_JS) }),
-        )
+        .route("/", get(|| async { ([NO_STORE], Html(INDEX_HTML)) }))
+        .route("/app.js", get(move || async move { js(APP_JS) }))
+        .route("/live", get(|| async { ([NO_STORE], Html(LIVE_HTML)) }))
+        .route("/live.js", get(move || async move { js(LIVE_JS) }))
         .route("/api/live/setup", get(live_setup))
         .route("/api/bots", get(bots))
         .route("/api/orders", get(orders))
