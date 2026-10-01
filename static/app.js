@@ -933,6 +933,12 @@
       let band = null;
       if (dev.t.length) {
         const bhiArr = new Float64Array(leader.length), bloArr = new Float64Array(leader.length);
+        // The floor on its own, so the chart can show WHICH half of the
+        // max() is binding. Changing `min` moves nothing wherever the
+        // fraction already exceeds it, which is most of any interesting
+        // stretch, and without both edges drawn that reads as the control
+        // being broken rather than as the floor being irrelevant there.
+        const fhiArr = new Float64Array(leader.length), floArr = new Float64Array(leader.length);
         for (let i = 0; i < leader.length; i++) {
           let k = lowerBound(dev.t, t[i]);
           if (k >= dev.t.length || dev.t[k] > t[i]) k--;
@@ -940,13 +946,17 @@
           const need = Math.max(impulseMin, impulseFrac * Math.abs(dv)) / 10000;
           bhiArr[i] = ema[i] * (1 + need);
           bloArr[i] = ema[i] * (1 - need);
+          fhiArr[i] = ema[i] * (1 + impulseMin / 10000);
+          floArr[i] = ema[i] * (1 - impulseMin / 10000);
         }
-        band = { t, hi: bhiArr, lo: bloArr };
+        // Only worth drawing when the two can differ.
+        const floors = impulseFrac > 0 && impulseMin > 0 ? { hi: fhiArr, lo: floArr } : null;
+        band = { t, hi: bhiArr, lo: bloArr, floors };
       }
       impulse = { t, v, hl: impulseHl, min: impulseMin, frac: impulseFrac, at, band };
       // The leader's EMA itself, on the price pane: the level the impulse
       // is measured from.
-      lines.push({ id: "binance:ema", name: `binance mid ema ${impulseHl} ms (impulse; shaded band is the gate)`, color: "#8fb8ff", width: 1.5, dash: [8, 3], t, v: ema });
+      lines.push({ id: "binance:ema", name: `binance mid ema ${impulseHl} ms (band = gate; dotted = the ${impulseMin} bps floor)`, color: "#8fb8ff", width: 1.5, dash: [8, 3], t, v: ema });
     }
     const last = [...w.events].reverse().find((e) => e.decision?.threshold_bps != null);
     const threshold = last ? last.decision.threshold_bps : null;
@@ -1400,6 +1410,24 @@
         ctx.lineTo(nx, py); ctx.lineTo(nx, ny); py = ny;
       }
       ctx.closePath(); ctx.fill();
+      // The floor, where it is not the whole story: the band edge standing
+      // outside this line is the fraction binding, and `min` doing nothing
+      // there however it is set.
+      if (band.floors) {
+        ctx.strokeStyle = IMPULSE_COLOR; ctx.lineWidth = 1; ctx.globalAlpha = 0.55; ctx.setLineDash([2, 3]);
+        for (const edge of [band.floors.hi, band.floors.lo]) {
+          ctx.beginPath();
+          let fy = yPx(P.price, edge[i0], v.y0, v.y1);
+          ctx.moveTo(xPx(P, band.t[i0], v), fy);
+          for (let i = i0 + 1; i <= i1; i++) {
+            const nx = xPx(P, band.t[i], v), ny = yPx(P.price, edge[i], v.y0, v.y1);
+            ctx.lineTo(nx, fy); ctx.lineTo(nx, ny); fy = ny;
+          }
+          ctx.lineTo(P.left + P.w, fy);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      }
       ctx.globalAlpha = 1; ctx.restore();
     }
     for (const l of w.lines) {
