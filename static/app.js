@@ -1019,6 +1019,49 @@
         else dev.gate[k] = heldAtTime(dev.t[k]) ? 2 : 1;
       }
     }
+    // ---- the decision, in price ----
+    //
+    // The bot's test is "does the predicted landing beat what this trade
+    // has to pay". Both sides of that are prices, so they belong on the
+    // price pane rather than as two bps curves in a pane too short to read.
+    //
+    //   landing  the lagger's mid moved by rho x the raw deviation: where
+    //            the lagger is expected to be one lag from now.
+    //   needed   the touch the order would cross, moved by the threshold it
+    //            must clear. The side follows the deviation: a leader above
+    //            the lagger is a buy, which crosses the ask.
+    //
+    // Where the landing line is beyond the needed line, the trade pays.
+    // That is the same comparison the gains made against the dashed
+    // threshold, with nothing left to convert in your head.
+    if (dev.t.length && threshold != null) {
+      // The lagger book standing at an instant: the last quote at or before
+      // it, which is what the bot would have been holding.
+      const laggerTs = lagger.map((q) => q.t);
+      const laggerAt = (when) => {
+        let k = lowerBound(laggerTs, when);
+        if (k >= lagger.length || laggerTs[k] > when) k--;
+        return k >= 0 ? lagger[k] : null;
+      };
+      const lt = new Float64Array(dev.t.length), lv = new Float64Array(dev.t.length);
+      const nt = new Float64Array(dev.t.length), nv = new Float64Array(dev.t.length);
+      let n = 0;
+      for (let k = 0; k < dev.t.length; k++) {
+        const q = laggerAt(dev.t[k]);
+        if (!q) continue;
+        const mid = (q.bid + q.ask) / 2;
+        const raw = dev.v[k] / 10000;
+        const buy = dev.v[k] > 0;
+        lt[n] = dev.t[k]; lv[n] = mid * (1 + rho * raw);
+        nt[n] = dev.t[k];
+        nv[n] = buy ? q.ask * (1 + threshold / 10000) : q.bid * (1 - threshold / 10000);
+        n++;
+      }
+      if (n > 1) {
+        lines.push({ id: "decision:landing", name: "predicted landing (lagger mid + rho x deviation)", color: "#7ee787", width: 1.3, t: lt.subarray(0, n), v: lv.subarray(0, n) });
+        lines.push({ id: "decision:needed", name: `what it must beat (touch + ${threshold.toFixed(1)} bps threshold)`, color: "#f0883e", width: 1.3, dash: [5, 4], t: nt.subarray(0, n), v: nv.subarray(0, n) });
+      }
+    }
     const pad = Number.isFinite(lo) && hi > lo ? (hi - lo) * 0.06 : Math.abs(lo || 1) * 0.001;
     const full = { x0: from, x1: to, y0: Number.isFinite(lo) ? lo - pad : 0, y1: Number.isFinite(hi) ? hi + pad : 1 };
     // Time-anchored, not price-anchored: a hold has no price, and what it
@@ -1128,23 +1171,15 @@
   // Room on the right for the slope's own axis in the lower pane.
   const M = { l: 74, r: 54, t: 10, b: 30, gap: 26 };
   let W = 0, H = 0; // css pixels
-  // The lower (bps) pane is a switch, off by default: the price pane then
-  // takes the whole height and nothing of the lower pane is drawn or hit.
-  const showBps = () => $("bpspane").checked;
+  // One pane. The bps pane went because nothing in it could be read at the
+  // height it got, and because everything it was for reads better in
+  // price: a decision is "will the landing beat what it has to pay", and
+  // both of those are prices. They are drawn on this pane instead.
   function panes() {
-    if (!showBps()) {
-      const ph = Math.max(50, H - M.t - M.b);
-      return {
-        price: { top: M.t, h: ph },
-        bps: { top: M.t + ph, h: 0 },
-        left: M.l, w: Math.max(10, W - M.l - M.r),
-      };
-    }
-    const inner = H - M.t - M.b - M.gap;
-    const ph = Math.max(50, inner * 0.7);
+    const ph = Math.max(50, H - M.t - M.b);
     return {
       price: { top: M.t, h: ph },
-      bps: { top: M.t + ph + M.gap, h: Math.max(30, inner - ph) },
+      bps: { top: M.t + ph, h: 0 },
       left: M.l, w: Math.max(10, W - M.l - M.r),
     };
   }
@@ -1273,13 +1308,12 @@
     ctx.textBaseline = "middle";
 
     // panes' background and grid
-    for (const pane of showBps() ? [P.price, P.bps] : [P.price]) { ctx.fillStyle = "#0f141b"; ctx.fillRect(P.left, pane.top, P.w, pane.h); }
+    for (const pane of [P.price]) { ctx.fillStyle = "#0f141b"; ctx.fillRect(P.left, pane.top, P.w, pane.h); }
     const xt = timeTicks(v, P.w);
     ctx.strokeStyle = "#1f2733"; ctx.lineWidth = 1;
     for (const tk of xt) {
       const x = Math.round(xPx(P, tk.t, v)) + 0.5;
       ctx.beginPath(); ctx.moveTo(x, P.price.top); ctx.lineTo(x, P.price.top + P.price.h);
-      if (showBps()) { ctx.moveTo(x, P.bps.top); ctx.lineTo(x, P.bps.top + P.bps.h); }
       ctx.stroke();
     }
     ctx.fillStyle = "#8b98a9"; ctx.textAlign = "center";
@@ -1552,170 +1586,6 @@
     ctx.restore();
     ctx.save(); ctx.translate(14, P.price.top + P.price.h / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillStyle = "#8b98a9"; ctx.fillText(w.inst, 0, 0); ctx.restore();
 
-    if (showBps()) {
-    // ---- bps pane: autoscaled to what is visible ----
-    let blo = -1, bhi = 1;
-    const d = w.dev;
-    if (d.t.length) {
-      let i0 = lowerBound(d.t, v.x0); if (i0 > 0) i0--;
-      const i1 = Math.min(d.t.length - 1, lowerBound(d.t, v.x1));
-      let lo = Infinity, hi = -Infinity;
-      for (let i = i0; i <= i1; i++) { if (d.v[i] < lo) lo = d.v[i]; if (d.v[i] > hi) hi = d.v[i]; }
-      if (w.threshold != null) { lo = Math.min(lo, -w.threshold); hi = Math.max(hi, w.threshold); }
-      const im = w.impulse;
-      if (im && im.t.length && !state.hidden.has("leader:impulse")) {
-        let j0 = lowerBound(im.t, v.x0); if (j0 > 0) j0--;
-        const j1 = Math.min(im.t.length - 1, lowerBound(im.t, v.x1));
-        for (let i = j0; i <= j1; i++) { if (im.v[i] < lo) lo = im.v[i]; if (im.v[i] > hi) hi = im.v[i]; }
-        if (im.min > 0) { lo = Math.min(lo, -im.min); hi = Math.max(hi, im.min); }
-        // The gate's bar rises with the deviation, so the pane has to make
-        // room for it or the curve that explains the refusal is cropped.
-        if (im.frac > 0) {
-          for (let i = i0; i <= i1; i++) {
-            const need = Math.max(im.min, im.frac * Math.abs(d.v[i]));
-            if (-need < lo) lo = -need;
-            if (need > hi) hi = need;
-          }
-        }
-      }
-      lo = Math.min(lo, 0); hi = Math.max(hi, 0);
-      if (Number.isFinite(lo) && hi > lo) { const pad = (hi - lo) * 0.08; blo = lo - pad; bhi = hi + pad; }
-    }
-    const bt = valueTicks(blo, bhi, P.bps.h, 28);
-    ctx.textAlign = "right";
-    for (const tk of bt) {
-      const y = Math.round(yPx(P.bps, tk.y, blo, bhi)) + 0.5;
-      ctx.strokeStyle = tk.y === 0 ? "#3a4656" : "#1f2733"; ctx.beginPath(); ctx.moveTo(P.left, y); ctx.lineTo(P.left + P.w, y); ctx.stroke();
-      ctx.fillStyle = "#8b98a9"; ctx.fillText(tk.label, P.left - 6, y);
-    }
-    ctx.save(); ctx.beginPath(); ctx.rect(P.left, P.bps.top, P.w, P.bps.h); ctx.clip();
-    paintGate(P, P.bps, v, w.dev);
-    if (w.threshold != null) {
-      ctx.strokeStyle = "#8b98a9"; ctx.lineWidth = 1; ctx.setLineDash([5, 4]);
-      for (const s of [w.threshold, -w.threshold]) { const y = yPx(P.bps, s, blo, bhi); ctx.beginPath(); ctx.moveTo(P.left, y); ctx.lineTo(P.left + P.w, y); ctx.stroke(); }
-      ctx.setLineDash([]);
-    }
-    if (d.t.length) {
-      let i0 = lowerBound(d.t, v.x0); if (i0 > 0) i0--;
-      const i1 = Math.min(d.t.length - 1, lowerBound(d.t, v.x1));
-      ctx.strokeStyle = "#c9d1d9"; ctx.lineWidth = 1.2; ctx.beginPath();
-      let py = yPx(P.bps, d.v[i0], blo, bhi);
-      ctx.moveTo(xPx(P, d.t[i0], v), py);
-      for (let i = i0 + 1; i <= i1; i++) { const x = xPx(P, d.t[i], v); ctx.lineTo(x, py); py = yPx(P.bps, d.v[i], blo, bhi); ctx.lineTo(x, py); }
-      ctx.lineTo(P.left + P.w, py);
-      ctx.stroke();
-      for (const [id, arr, color, width] of [["dev:rawgain", d.rawGain, "#ff9f43", 1], ["dev:gain", d.gain, "#ffd166", 1.6]]) {
-        if (!arr || state.hidden.has(id)) continue;
-        ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
-        let gy = yPx(P.bps, arr[i0], blo, bhi);
-        ctx.moveTo(xPx(P, d.t[i0], v), gy);
-        for (let i = i0 + 1; i <= i1; i++) { const x = xPx(P, d.t[i], v); ctx.lineTo(x, gy); gy = yPx(P.bps, arr[i], blo, bhi); ctx.lineTo(x, gy); }
-        ctx.lineTo(P.left + P.w, gy);
-        ctx.stroke();
-      }
-    }
-    // The leader's impulse on the same bps axis as the deviation, against
-    // the bar it actually had to clear.
-    //
-    // That bar is max(leader_impulse_min_bps, leader_impulse_fraction x
-    // |deviation|), so with a fraction set it is a CURVE that rises with
-    // the deviation, not the flat floor this used to draw. Drawing only the
-    // floor understated the gate badly in exactly the windows worth
-    // explaining: NEAR 2026-10-01 19:30 showed a 1.5 bps impulse against a
-    // dashed 8, reading as a near miss, while the real bar was 19.4 because
-    // the deviation had opened to 48. The gate is hardest when the
-    // opportunity is largest, and the chart has to show that.
-    const im = w.impulse;
-    if (im && im.t.length && !state.hidden.has("leader:impulse")) {
-      if (im.frac > 0 && d.t.length) {
-        // The bar at each deviation sample, mirrored: an impulse clears it
-        // on the deviation's own side, so the spike must reach the curve
-        // above for a positive deviation and below for a negative one.
-        let i0 = lowerBound(d.t, v.x0); if (i0 > 0) i0--;
-        const i1 = Math.min(d.t.length - 1, lowerBound(d.t, v.x1));
-        const needed = (k) => Math.max(im.min, im.frac * Math.abs(d.v[k]));
-        ctx.strokeStyle = IMPULSE_COLOR; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.globalAlpha = 0.7;
-        for (const sign of [1, -1]) {
-          ctx.beginPath();
-          let py = yPx(P.bps, sign * needed(i0), blo, bhi);
-          ctx.moveTo(xPx(P, d.t[i0], v), py);
-          for (let i = i0 + 1; i <= i1; i++) {
-            const x = xPx(P, d.t[i], v);
-            ctx.lineTo(x, py);
-            py = yPx(P.bps, sign * needed(i), blo, bhi);
-            ctx.lineTo(x, py);
-          }
-          ctx.lineTo(P.left + P.w, py);
-          ctx.stroke();
-        }
-        ctx.setLineDash([]); ctx.globalAlpha = 1;
-      } else if (im.min > 0) {
-        ctx.strokeStyle = IMPULSE_COLOR; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.globalAlpha = 0.7;
-        for (const s of [im.min, -im.min]) { const y = yPx(P.bps, s, blo, bhi); ctx.beginPath(); ctx.moveTo(P.left, y); ctx.lineTo(P.left + P.w, y); ctx.stroke(); }
-        ctx.setLineDash([]); ctx.globalAlpha = 1;
-      }
-      let i0 = lowerBound(im.t, v.x0); if (i0 > 0) i0--;
-      const i1 = Math.min(im.t.length - 1, lowerBound(im.t, v.x1));
-      ctx.strokeStyle = IMPULSE_COLOR; ctx.lineWidth = 1.2; ctx.beginPath();
-      // Spikes, not steps: the impulse is a reading AT each quote, and what
-      // it does between quotes is decay, which the line does not pretend to
-      // draw.
-      for (let i = i0; i <= i1; i++) { const x = xPx(P, im.t[i], v); ctx.moveTo(x, yPx(P.bps, 0, blo, bhi)); ctx.lineTo(x, yPx(P.bps, im.v[i], blo, bhi)); }
-      ctx.stroke();
-    }
-    // The bot's OWN reading at each open: its gain as a filled dot, its
-    // threshold as a bar through it. The dot above its bar is the decision
-    // as the bot took it, whatever the reconstruction under it says.
-    if (w.recorded?.length && !state.hidden.has("decision:recorded")) {
-      for (const r of w.recorded) {
-        if (r.t < v.x0 || r.t > v.x1) continue;
-        const x = xPx(P, r.t, v);
-        const yg = yPx(P.bps, Math.abs(r.gain), blo, bhi);
-        const yt = yPx(P.bps, r.threshold, blo, bhi);
-        ctx.strokeStyle = "#c9d1d9"; ctx.lineWidth = 1; ctx.globalAlpha = 0.8;
-        ctx.beginPath(); ctx.moveTo(x - 5, yt); ctx.lineTo(x + 5, yt); ctx.stroke();
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = Math.abs(r.gain) > r.threshold ? GREEN : "#f85149";
-        ctx.beginPath(); ctx.arc(x, yg, 3, 0, Math.PI * 2); ctx.fill();
-      }
-    }
-    // The lagger's slope on its own (right-hand) axis, autoscaled to what is
-    // visible and always including zero, so the sign reads at a glance.
-    let slopeAxis = null;
-    const sl = w.slope;
-    if (sl && sl.t.length && !state.hidden.has("slope:line")) {
-      let i0 = lowerBound(sl.t, v.x0); if (i0 > 0) i0--;
-      const i1 = Math.min(sl.t.length - 1, lowerBound(sl.t, v.x1));
-      let lo = 0, hi = 0;
-      for (let i = i0; i <= i1; i++) { if (sl.v[i] < lo) lo = sl.v[i]; if (sl.v[i] > hi) hi = sl.v[i]; }
-      if (hi <= lo) { lo = -1; hi = 1; }
-      const pad = (hi - lo) * 0.08;
-      slopeAxis = { lo: lo - pad, hi: hi + pad };
-      ctx.strokeStyle = SLOPE_COLOR; ctx.lineWidth = 1.2; ctx.globalAlpha = 0.9; ctx.beginPath();
-      let py = yPx(P.bps, sl.v[i0], slopeAxis.lo, slopeAxis.hi);
-      ctx.moveTo(xPx(P, sl.t[i0], v), py);
-      for (let i = i0 + 1; i <= i1; i++) { const x = xPx(P, sl.t[i], v); ctx.lineTo(x, py); py = yPx(P.bps, sl.v[i], slopeAxis.lo, slopeAxis.hi); ctx.lineTo(x, py); }
-      ctx.lineTo(P.left + P.w, py);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
-    ctx.restore();
-    if (slopeAxis) {
-      // Right-axis ticks for the slope, in the slope's colour.
-      ctx.textAlign = "left"; ctx.fillStyle = SLOPE_COLOR;
-      for (const tk of valueTicks(slopeAxis.lo, slopeAxis.hi, P.bps.h, 28)) {
-        const y = Math.round(yPx(P.bps, tk.y, slopeAxis.lo, slopeAxis.hi)) + 0.5;
-        ctx.fillText(tk.label, P.left + P.w + 4, y);
-      }
-    }
-    ctx.save(); ctx.translate(14, P.bps.top + P.bps.h / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillStyle = "#8b98a9";
-    const gateNote = w.impulse
-      ? (w.impulse.frac > 0
-          ? `; impulse bar max(${w.impulse.min}, ${w.impulse.frac} x |deviation|), the curve that rises with it`
-          : `; impulse bar ${w.impulse.min}`)
-      : "";
-    ctx.fillText(`${w.dev.basis ? "deviation (leader over lagger, less basis)" : "leader over lagger"} and the gains, bps${w.threshold != null ? ` (dashed: threshold ${w.threshold.toFixed(1)}; an open needs both gains past it${gateNote})` : ""}`, 0, 0); ctx.restore();
-    }
 
     // ---- rubber band ----
     if (state.drag && state.drag.moved) {
