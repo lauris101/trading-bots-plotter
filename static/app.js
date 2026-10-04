@@ -474,6 +474,16 @@
     binance_perps: { width: 1, color: "#3d7bd6", label: "binance" },
     binance: { width: 1, color: "#5aa0ff", label: "binance spot" },
     hyperliquid: { width: 2, color: "#e3b341", label: "hyperliquid" },
+    hyperliquid_xyz: { width: 2, color: "#e3b341", label: "hyperliquid xyz" },
+  };
+
+  /** The lagger side's venue in a window: whichever Hyperliquid venue the
+   *  window has. The scraper labels each dex's rows with its own venue
+   *  (hyperliquid, hyperliquid_xyz, ...), and an instrument trades on one. */
+  const laggerVenue = (w) => Object.keys(w.quotes.by_venue).find((v) => v.startsWith("hyperliquid"));
+  const laggerRows = (w) => {
+    const v = laggerVenue(w);
+    return v ? w.quotes.by_venue[v] : undefined;
   };
 
   /** Bring an event to the middle WITHOUT changing the zoom: the visible
@@ -612,7 +622,7 @@
     // On a bucketed window the input is the bucket's last quote, which
     // smooths the line more than the bot saw; the status line says when.
     const emaMs = Number($("ema").value);
-    const hl = w.quotes.by_venue.hyperliquid;
+    const hl = laggerRows(w);
     /** The bot's EMA of the Hyperliquid mid at `halftimeMs`, one value per
      *  quote, evaluated as of that quote. */
     const emaOf = (halftimeMs) => {
@@ -632,7 +642,7 @@
     };
     if (emaMs > 0 && hl && hl.length) {
       const t = Float64Array.from(hl, (r) => r.t);
-      const st = VENUE.hyperliquid;
+      const st = VENUE[laggerVenue(w)] ?? VENUE.hyperliquid;
       lines.push({ id: "hyperliquid:ema", name: `${st.label} mid ema ${emaMs} ms`, color: "#f5dc8c", width: 1.5, dash: [8, 3], t, v: emaOf(emaMs) });
     }
     // The exit slope, as the bot reads it (taker.exit.slope_exit.fast_ms /
@@ -786,7 +796,7 @@
     const protections = [];
     if (!state.seen.has("protection:stop")) { state.seen.add("protection:stop"); state.hidden.add("protection:stop"); }
     {
-      const hl = w.quotes.by_venue.hyperliquid ?? [];
+      const hl = laggerRows(w) ?? [];
       for (const e of w.events) {
         if (e.kind !== "sent" || !e.protection || !e.side) continue;
         const p = e.protection;
@@ -826,7 +836,7 @@
     // refused where the bot had opened (ONDO 2026-09-20 10:31:10: 26 bps
     // recorded, all red on the page).
     const leader = w.quotes.by_venue.binance_perps ?? w.quotes.by_venue.binance ?? [];
-    const lagger = w.quotes.by_venue.hyperliquid ?? [];
+    const lagger = laggerRows(w) ?? [];
     // `half` is the lagger's half spread at each sample, bps: what the gain
     // (rho x deviation - half spread) is short of the deviation by.
     const dev = { t: [], v: [], half: [], basis: false };
