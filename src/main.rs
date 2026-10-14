@@ -176,6 +176,75 @@ async fn bots(State(app): State<Arc<App>>) -> ApiResult {
             })
         })
         .collect();
+    let mut out = out;
+    // Every instrument the bots' configs key, orders or not, so a coin that
+    // did not trade (ENA 2026-10-14 12:30: every open held) can still be
+    // opened and its quotes seen. Only with control to ask; an instrument
+    // already listed from its orders keeps its counts.
+    if let Some(control) = app.control_url.as_deref() {
+        let mut seen: std::collections::HashSet<(String, String, String)> = out
+            .iter()
+            .map(|k| {
+                (
+                    k["bot"].as_str().unwrap_or("").to_owned(),
+                    k["strategy"].as_str().unwrap_or("").to_owned(),
+                    k["instrument"].as_str().unwrap_or("").to_owned(),
+                )
+            })
+            .collect();
+        let bots: Value = match app.http.get(format!("{control}/bots")).send().await {
+            Ok(resp) => resp.json().await.unwrap_or(Value::Null),
+            Err(_) => Value::Null,
+        };
+        let list = bots
+            .as_array()
+            .cloned()
+            .or_else(|| bots["bots"].as_array().cloned())
+            .unwrap_or_default();
+        for bot in &list {
+            let Some(name) = bot["name"].as_str() else {
+                continue;
+            };
+            let mode = bot["status"]["execution"]
+                .as_str()
+                .unwrap_or("live")
+                .to_owned();
+            let Ok(resp) = app
+                .http
+                .get(format!("{control}/bots/{name}/config"))
+                .send()
+                .await
+            else {
+                continue;
+            };
+            let Ok(doc) = resp.json::<Value>().await else {
+                continue;
+            };
+            for strategy in doc["config"]["strategies"].as_array().into_iter().flatten() {
+                if strategy["lagger_venue"].as_str().is_none() {
+                    continue;
+                }
+                let strategy_name = strategy["name"].as_str().unwrap_or("").to_owned();
+                for canonical in strategy["instruments"]
+                    .as_object()
+                    .map(|m| m.keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default()
+                {
+                    if !seen.insert((name.to_owned(), strategy_name.clone(), canonical.clone())) {
+                        continue;
+                    }
+                    out.push(json!({
+                        "bot": name,
+                        "strategy": strategy_name,
+                        "instrument": canonical,
+                        "mode": mode,
+                        "orders": 0,
+                        "last_at": DateTime::<Utc>::UNIX_EPOCH,
+                    }));
+                }
+            }
+        }
+    }
     Ok(Json(json!({ "keys": out })))
 }
 
