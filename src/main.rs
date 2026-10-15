@@ -845,6 +845,14 @@ async fn quotes_for(
     let span_ms = (to - from).num_milliseconds().max(1);
     let f = from.format("%Y-%m-%d %H:%M:%S%.3f");
     let t = to.format("%Y-%m-%d %H:%M:%S%.3f");
+    // The table is partitioned by the hour of `ts` (the recorder's clock)
+    // and sorted by (venue, symbol, ts_recv_us); a filter on `ts_venue`
+    // alone reads every partition of the day. `ts` runs within a second of
+    // `ts_venue`, so a minute of slack either side prunes to the window's
+    // hour(s) without losing a quote. The instrument is stored upper-case.
+    let pf = (from - chrono::Duration::minutes(1)).format("%Y-%m-%d %H:%M:%S");
+    let pt = (to + chrono::Duration::minutes(1)).format("%Y-%m-%d %H:%M:%S");
+    let inst = inst.to_uppercase();
     // ClickHouse is a remote round trip (0.3-0.8 s of latency from here
     // before any work), so the window is ONE round trip, not two: the raw
     // quotes and the bucketed ones are asked for together. The raw query
@@ -856,7 +864,8 @@ async fn quotes_for(
     let bucket_ms = (span_ms / MAX_QUOTES_PER_VENUE).max(1);
     let raw_sql = format!(
         "SELECT venue, toUnixTimestamp64Milli(ts_venue) AS t, bid, ask FROM {db}.quotes \
-         WHERE upper(instrument) = upper('{inst}') AND ts_venue BETWEEN '{f}' AND '{t}' \
+         WHERE ts BETWEEN '{pf}' AND '{pt}' AND instrument = '{inst}' \
+           AND ts_venue BETWEEN '{f}' AND '{t}' \
          ORDER BY venue, ts_venue LIMIT {cap} BY venue FORMAT TSV",
         db = app.ch_db,
         cap = MAX_QUOTES_PER_VENUE + 1
@@ -865,7 +874,7 @@ async fn quotes_for(
         "SELECT venue, toUnixTimestamp64Milli(t) AS t, bid, ask FROM ( \
             SELECT venue, toStartOfInterval(ts_venue, INTERVAL {bucket_ms} MILLISECOND) AS t, \
                    argMax(bid, ts_venue) AS bid, argMax(ask, ts_venue) AS ask \
-            FROM {db}.quotes WHERE upper(instrument) = upper('{inst}') \
+            FROM {db}.quotes WHERE ts BETWEEN '{pf}' AND '{pt}' AND instrument = '{inst}' \
               AND ts_venue BETWEEN '{f}' AND '{t}' GROUP BY venue, t) \
          ORDER BY venue, t FORMAT TSV",
         db = app.ch_db
