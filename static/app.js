@@ -472,10 +472,11 @@
       if (basis != null) row("basis", `${f(Math.abs(basis))} bps`, "standing gap, not traded");
       if (rawDev != null) row("move", `${f(Math.abs(rawDev))} bps`, dev != null && Math.abs(Math.abs(dev) - Math.abs(rawDev)) > 0.05 ? `gap - basis; ${f(Math.abs(dev))} smoothed` : "gap - basis");
       if (rho != null) row("follow", `${f(rho * Math.abs(dev ?? rawDev ?? 0))} bps`, `move x rho ${f(rho, 2)}${num(d.rho_measured) != null ? ` (measured ${f(d.rho_measured, 2)})` : ""}`);
-      if (gain != null) row("gain", `${f(Math.abs(gain))} bps`, halfSpread != null ? `follow - half spread ${f(halfSpread)}` : "");
+      if (gain != null) row("gain", `${f(Math.abs(gain))} bps`, `${halfSpread != null ? `follow - half spread ${f(halfSpread)}` : ""}; the trigger`);
+      if (rawGain != null && gain != null && Math.abs(Math.abs(rawGain) - Math.abs(gain)) > 0.05) row("raw gain", `${f(Math.abs(rawGain))} bps`, `raw move ${f(Math.abs(rawDev))} x rho ${f(rho, 2)}${halfSpread != null ? ` - half spread ${f(halfSpread)}` : ""}; what the bribe, reach and landing read`);
       if (thr != null) row("bar", `${f(thr)} bps`, [fees != null ? `fees ${f(2 * fees)}` : null, margin != null ? `margin ${f(margin)}` : null, base != null ? `base bribe ${f(base)}` : null].filter(Boolean).join(" + "));
       if (cleared != null) row("cleared", cleared >= 0 ? `<span style="color:#3fb950">+${f(cleared)} bps</span>` : `<span style="color:#f85149">${f(cleared)} bps</span>`, "gain - bar");
-      if (sent != null) row("bribe", `${f(sent)} bps`, `${rawGain != null ? `curve at raw gain ${f(Math.abs(rawGain))}` : ""}${base != null && sent > base + 0.05 ? `; ${f(sent - base)} over the base` : ""}`);
+      if (sent != null) row("bribe", `${f(sent)} bps`, `${rawGain != null ? `the curve at raw gain ${f(Math.abs(rawGain))}` : ""}${base != null && sent > base + 0.05 ? `; ${f(sent - base)} over the base the bar prices` : ""}`);
       if (reach != null) row("reach", `${f(reach)} bps`, `${floor != null && Math.abs(reach - floor) < 0.05 ? "the floor" : "model"}${model != null ? `; model ${f(model)} = landing ${f(landingBps)} - costs ${f(mustPay)}` : ""}${floor != null ? `; floor ${f(floor)}` : ""}`);
       if (limit != null && touch != null) row("limit", fmtPx(limit), `${buy ? "ask" : "bid"} ${fmtPx(touch)} ${buy ? "+" : "-"} ${f(reach)} bps`);
       if (landing != null) row("landing", `${fmtPx(landing)} (${f(landingBps)} bps)`, `in ${f(d.delta_ms, 0)} ms${num(d.landing_measured_px) != null && mid ? `; measured lag ${f(d.delta_measured_ms, 0)} ms -> ${fmtPx(d.landing_measured_px)} (${f(Math.abs((Number(d.landing_measured_px) / mid - 1) * 10000))} bps), ${d.lag_samples ?? "-"} episodes` : ""}`);
