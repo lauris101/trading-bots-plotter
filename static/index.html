@@ -48,6 +48,11 @@
   #tip[hidden] { display:none; }
   #tip.pinned { pointer-events:auto; border-color: var(--accent); box-shadow: 0 8px 28px rgba(0,0,0,.5); white-space:normal; max-width:560px; }
   #tip .tip-hint { color: var(--muted); margin-top:6px; border-top:1px solid var(--line); padding-top:5px; }
+  #tip table.dec { border-collapse:collapse; margin-top:5px; border-top:1px solid var(--line); }
+  #tip table.dec td { padding:1px 8px 1px 0; vertical-align:top; white-space:nowrap; }
+  #tip table.dec td:first-child { color:var(--muted); }
+  #tip table.dec td.n { text-align:right; font-weight:600; }
+  #tip table.dec td.note { color:var(--muted); white-space:normal; }
   .legend button.lg { display:inline-flex; align-items:center; gap:5px; padding:2px 7px; font-size:11px; border-radius:999px; }
   .legend button.lg.off { opacity:.35; text-decoration:line-through; }
   .legend .help { margin-left:auto; }

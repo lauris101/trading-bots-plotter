@@ -19,13 +19,9 @@ with both venues' quotes and every order event on top of them.
   and an amend (a resting order re-priced in place) a bar at the price it
   moved to - solid when the venue accepted the move, dashed at the price it
   never reached when the venue refused it. Nothing is dropped for want of a shape. An open's marker also
-  carries the decision the calculator recorded, told as it was made: the
-  gap between the books and the part of it that is the standing basis,
-  what the lagger is expected to follow at the rho in force, the bar
-  (fees, margin, base bribe) and by how much it was cleared, the bribe
-  sent, how the limit was built (touch, reach, the floor or the model's
-  own reach), the expected landing, and the quote ages; the recorded
-  numbers follow in a dimmer line.
+  carries the decision the calculator recorded as a table, one row per
+  step: gap, basis, move, follow, gain, bar and its clearance, bribe,
+  reach, limit, landing, impulse, quote ages.
 - Lower pane: the leader's mid over the lagger's mid in basis points, with
   the open threshold of the last decision as dashed lines.
 - Drag a box to zoom into it; two-finger trackpad scroll pans; pinch or
