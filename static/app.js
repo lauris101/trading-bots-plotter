@@ -446,20 +446,69 @@
     }
     const d = e.decision;
     if (d) {
-      const f = (v, p = 1) => (typeof v === "number" ? v.toFixed(p) : "-");
-      lines.push(`<b>decision</b> dev ${f(d.deviation_bps)} bps (raw ${f(d.raw_deviation_bps)}), basis ${f(d.basis_bps)}`);
-      lines.push(`threshold ${f(d.threshold_bps)} bps, gain ${f(d.gain_bps)} (raw ${f(d.raw_gain_bps)}), rho ${f(d.rho, 2)}, delta ${f(d.delta_ms, 0)} ms`);
-      if (d.margin_bps != null) lines.push(`threshold = fees 2 x ${f(d.fees_bps, 2)} + base bribe ${f(d.base_priority_bps)} + margin ${f(d.margin_bps)} bps; sent bribe ${e.priority != null ? (Number(e.priority) / 1e4).toFixed(1) : "-"} bps; reach ${f(d.reach_bps)} bps past the touch (floor: taker offset ${f(d.taker_offset_bps)})`);
-      if (d.confirmed_after_ms > 0) lines.push(`sent ${f(d.confirmed_after_ms)} ms after the trigger first cleared (entry.confirm_ms): the gate and the price are this instant's`);
-      if (d.priced_gain_bps != null && Math.abs(d.priced_gain_bps - d.raw_gain_bps) > 0.05) lines.push(`priced from the leader's short ema (entry.raw_halftime_ms): deviation ${f(d.priced_deviation_bps)} bps, gain ${f(d.priced_gain_bps)} bps (raw ${f(d.raw_gain_bps)}); the bribe, the reach and the landing come from these`);
-      if (d.landing_px != null) {
-        const mid = (Number(d.lagger_bid) + Number(d.lagger_ask)) / 2;
-        const bpsOf = (px) => (mid > 0 ? ((Number(px) / mid - 1) * 10000).toFixed(1) : "-");
-        lines.push(`expected landing ${Number(d.landing_px).toPrecision(6)} (${bpsOf(d.landing_px)} bps off the mid) after ${f(d.delta_ms, 0)} ms at rho ${f(d.rho, 2)} in force; the lag model measures rho ${f(d.rho_measured, 2)}, lag ${f(d.delta_measured_ms, 0)} ms over ${d.lag_samples ?? "-"} episodes -> ${Number(d.landing_measured_px).toPrecision(6)} (${bpsOf(d.landing_measured_px)} bps)`);
+      // The decision, told the way it was made: the gap between the books,
+      // what of it is the standing basis, what the lagger is expected to
+      // follow, the bar it had to clear, and what that priced. The numbers
+      // the calculator recorded follow, dimmer, for the reader who wants
+      // to check the arithmetic.
+      const f = (v, p = 1) => (typeof v === "number" && Number.isFinite(v) ? v.toFixed(p) : "-");
+      const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+      const buy = e.side === "buy";
+      const dim = (t) => `<span style="color:#8b949e">${t}</span>`;
+      const good = (t) => `<span style="color:#3fb950">${t}</span>`;
+      const bad = (t) => `<span style="color:#f85149">${t}</span>`;
+      const leader = num(Number(d.leader_mid)), bid = num(Number(d.lagger_bid)), ask = num(Number(d.lagger_ask));
+      const mid = bid != null && ask != null ? (bid + ask) / 2 : null;
+      const edge = leader != null && mid ? ((leader / mid) - 1) * 10000 : null;
+      const basis = num(d.basis_bps), rawDev = num(d.raw_deviation_bps), dev = num(d.deviation_bps);
+      const rho = num(d.rho), gain = num(d.gain_bps), rawGain = num(d.raw_gain_bps), thr = num(d.threshold_bps);
+      const halfSpread = bid != null && ask != null && mid ? ((ask - bid) / mid / 2) * 10000 : null;
+      const fees = num(d.fees_bps), margin = num(d.margin_bps), base = num(d.base_priority_bps);
+      const sent = e.priority != null ? Number(e.priority) / 1e4 : null;
+      const reach = num(d.reach_bps), floor = num(d.taker_offset_bps);
+      const dir = buy ? "above" : "below";
+      lines.push(`<b>why it fired</b>`);
+      if (edge != null && basis != null) {
+        lines.push(`Binance was ${f(Math.abs(edge))} bps ${dir} Hyperliquid's mid. ${f(Math.abs(basis))} bps of that is the standing basis (the gap that never closes), so the move was ${f(Math.abs(rawDev))} bps${dev != null && Math.abs(Math.abs(dev) - Math.abs(rawDev)) > 0.05 ? `, ${f(Math.abs(dev))} after the signal's smoothing` : ""}.`);
       }
-      lines.push(`leader mid ${esc(d.leader_mid)}  lagger ${esc(d.lagger_bid)} / ${esc(d.lagger_ask)}`);
-      if (d.leader_impulse_bps != null) lines.push(`leader impulse ${f(d.leader_impulse_bps)} bps off its short ema`);
-      lines.push(`quote age: leader ${f(d.leader_age_ms, 0)} ms, lagger ${f(d.lagger_age_ms, 0)} ms`);
+      if (rho != null && gain != null) {
+        lines.push(`At rho ${f(rho, 2)} the lagger is expected to follow ${f(rho * Math.abs(dev ?? rawDev ?? 0))} bps of it${halfSpread != null ? `; less half the spread (${f(halfSpread)}) that is a gain of <b>${f(Math.abs(gain))} bps</b>` : `: a gain of <b>${f(Math.abs(gain))} bps</b>`}.`);
+      }
+      if (thr != null) {
+        const cleared = gain != null ? Math.abs(gain) - thr : null;
+        const parts = [];
+        if (fees != null) parts.push(`fees 2 x ${f(fees, 2)}`);
+        if (margin != null) parts.push(`margin ${f(margin)}`);
+        if (base != null) parts.push(`base bribe ${f(base)}`);
+        lines.push(`The bar was <b>${f(thr)} bps</b>${parts.length ? ` (${parts.join(" + ")})` : ""}${cleared != null ? `: ${cleared >= 0 ? good(`cleared by ${f(cleared)} bps`) : bad(`short by ${f(-cleared)} bps`)}` : ""}.`);
+      }
+      if (sent != null) {
+        lines.push(`Bribe sent <b>${f(sent)} bps</b>${rawGain != null ? ` (the curve read at the raw gain of ${f(Math.abs(rawGain))} bps)` : ""}${base != null && sent > base + 0.05 ? `, ${f(sent - base)} over the base the bar already prices` : ""}.`);
+      }
+      const limit = num(Number(e.px ?? e.order_px));
+      const touch = buy ? ask : bid;
+      if (limit != null && touch != null && reach != null) {
+        // The reach the model would have allowed: the landing less every
+        // cost the order carries. The floor wins when that is smaller.
+        const landing = num(Number(d.landing_px));
+        const landingBps = landing != null && mid ? Math.abs((landing / mid - 1) * 10000) : null;
+        const mustPay = fees != null && margin != null && sent != null ? 2 * fees + margin + sent : null;
+        const model = landingBps != null && mustPay != null ? landingBps - mustPay : null;
+        const atFloor = floor != null && Math.abs(reach - floor) < 0.05;
+        lines.push(`Limit <b>${fmtPx(limit)}</b> = ${buy ? "ask" : "bid"} ${fmtPx(touch)} ${buy ? "+" : "-"} ${f(reach)} bps of reach${atFloor ? ` (the floor, taker_offset_bps${model != null ? `; the model's own reach was ${f(model)}: landing ${f(landingBps)} less costs ${f(mustPay)}` : ""})` : model != null ? ` (landing ${f(landingBps)} less costs ${f(mustPay)}; floor ${f(floor)})` : ""}.`);
+      }
+      if (d.landing_px != null && mid) {
+        const bpsOf = (px) => f(Math.abs((Number(px) / mid - 1) * 10000));
+        lines.push(`Expected to land at ${fmtPx(d.landing_px)} (${bpsOf(d.landing_px)} bps off the mid) after ${f(d.delta_ms, 0)} ms. The lag model measures rho ${f(d.rho_measured, 2)} and ${f(d.delta_measured_ms, 0)} ms over ${d.lag_samples ?? "-"} episodes, which would land at ${fmtPx(d.landing_measured_px)} (${bpsOf(d.landing_measured_px)} bps).`);
+      }
+      if (d.confirmed_after_ms > 0) lines.push(`Sent ${f(d.confirmed_after_ms, 0)} ms after the bar was first cleared (entry.confirm_ms); the gate and the price are this instant's.`);
+      if (d.priced_gain_bps != null && rawGain != null && Math.abs(Math.abs(d.priced_gain_bps) - Math.abs(rawGain)) > 0.05) lines.push(`The bribe, the reach and the landing were priced from the leader's short ema (entry.raw_halftime_ms): deviation ${f(Math.abs(d.priced_deviation_bps))} bps, gain ${f(Math.abs(d.priced_gain_bps))} bps.`);
+      const ages = [];
+      if (num(d.leader_age_ms) != null) ages.push(`leader quote ${f(d.leader_age_ms, 1)} ms old`);
+      if (num(d.lagger_age_ms) != null) ages.push(`lagger quote ${f(d.lagger_age_ms, 0)} ms old${d.lagger_age_ms > 1000 ? " (a quiet book: the touch may be stale)" : ""}`);
+      if (num(d.leader_impulse_bps) != null) ages.push(`leader impulse ${f(d.leader_impulse_bps)} bps off its short ema`);
+      if (ages.length) lines.push(`${ages.join("; ")}.`);
+      lines.push(dim(`recorded: dev ${f(dev)} (raw ${f(rawDev)}), basis ${f(basis)}, gain ${f(gain)} (raw ${f(rawGain)}), threshold ${f(thr)}, rho ${f(rho, 2)}, delta ${f(d.delta_ms, 0)} ms, reach ${f(reach)}, leader mid ${esc(d.leader_mid)}, lagger ${esc(d.lagger_bid)} / ${esc(d.lagger_ask)}`));
     }
     return lines.join("<br>");
   };
