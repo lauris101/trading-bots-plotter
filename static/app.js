@@ -781,7 +781,10 @@
         if (!Number.isFinite(limit) || limit <= 0) continue;
         const be = (2 * feesBps) / 10000 + (Number(e.priority) || 0) / 1e8;
         const dir = e.side === "buy" ? 1 : -1;
-        const cycle = w.events.filter((x) => x.cloid === e.cloid || x.parent_cloid === e.cloid);
+        // The cycle's events hang off its root: a rung of a split open
+        // finds its siblings and closes through the root.
+        const root = e.parent_cloid ?? e.cloid;
+        const cycle = w.events.filter((x) => x.cloid === root || x.parent_cloid === root);
         const t1 = Math.max(e.t + 500, ...cycle.map((x) => x.t));
         breakevens.push({
           cloid: e.cloid, side: e.side, t0: e.t, t1, limit,
