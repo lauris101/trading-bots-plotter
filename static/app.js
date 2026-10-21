@@ -437,7 +437,7 @@
     }
     if (e.error) lines.push(`<span style="color:#f85149">${esc(e.error)}</span>`);
     lines.push(`cloid ${esc(e.cloid)}${e.batch != null ? `  batch ${e.batch}` : ""}${e.mode ? `  ${esc(e.mode)}` : ""}${e.oid ? `  oid ${esc(e.oid)}` : ""}`);
-    if (e.parent_cloid) lines.push(`closes open ${esc(shortCloid(e.parent_cloid))}`);
+    if (e.parent_cloid) lines.push(e.reduce_only ? `closes open ${esc(shortCloid(e.parent_cloid))}` : `rung of open ${esc(shortCloid(e.parent_cloid))}`);
     const feeBlock = state.params?.taker ?? state.params?.taker_trail ?? state.params?.momentum;
     if (e.kind === "sent" && !e.reduce_only && feeBlock?.fees) {
       const limit = Number(e.px ?? e.order_px), dir = e.side === "buy" ? 1 : -1;
