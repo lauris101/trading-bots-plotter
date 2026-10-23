@@ -8,6 +8,7 @@
   const $ = (id) => document.getElementById(id);
   const state = {
     keys: [], orders: [], centreMs: null, selected: null, params: null,
+    leaderVenue: null,  // the strategy's leader venue id, from /api/params
     win: null,          // the built window: lines, marks, deviation, full range
     view: null,         // {x0, x1, y0, y1} in ms and price
     hidden: new Set(),  // series ids toggled off in the legend
@@ -217,6 +218,7 @@
       return;
     }
     state.params = p.params ?? null;
+    state.leaderVenue = typeof p.leader_venue === "string" ? p.leader_venue : null;
     const set = (id, v) => { if (v != null && v !== "") $(id).value = String(v); };
     const m = p.params?.momentum;
     if (m) {
@@ -468,7 +470,7 @@
       const cleared = gain != null && thr != null ? Math.abs(gain) - thr : null;
       const rows = [];
       const row = (k, v, note = "") => rows.push(`<tr><td>${k}</td><td class="n">${v}</td><td class="note">${note}</td></tr>`);
-      if (edge != null) row("gap", `${f(Math.abs(edge))} bps`, `binance ${buy ? "above" : "below"} hl: ${esc(d.leader_mid)} vs ${esc(d.lagger_bid)}/${esc(d.lagger_ask)}`);
+      if (edge != null) row("gap", `${f(Math.abs(edge))} bps`, `${state.win ? leaderLabel(state.win) : "leader"} ${buy ? "above" : "below"} hl: ${esc(d.leader_mid)} vs ${esc(d.lagger_bid)}/${esc(d.lagger_ask)}`);
       if (basis != null) row("basis", `${f(Math.abs(basis))} bps`, "standing gap, not traded");
       // Two readings of the move, each with its own job: the raw one (the
       // tick itself) prices the bribe, the reach and the landing; the
@@ -507,6 +509,7 @@
   const VENUE = {
     binance_perps: { width: 1, color: "#3d7bd6", label: "binance" },
     binance: { width: 1, color: "#5aa0ff", label: "binance spot" },
+    okx_swap: { width: 1, color: "#2bb3a0", label: "okx" },
     hyperliquid: { width: 2, color: "#e3b341", label: "hyperliquid" },
     hyperliquid_xyz: { width: 2, color: "#e3b341", label: "hyperliquid xyz" },
   };
@@ -515,6 +518,24 @@
    *  window has. The scraper labels each dex's rows with its own venue
    *  (hyperliquid, hyperliquid_xyz, ...), and an instrument trades on one. */
   const laggerVenue = (w) => Object.keys(w.quotes.by_venue).find((v) => v.startsWith("hyperliquid"));
+  /** The leader side's venue in a window: the strategy's own leader when
+   *  the window has its quotes (okx_swap for the OKX-led strategy), else
+   *  Binance, else the first venue that is not a Hyperliquid dex. Every
+   *  venue scraped for the instrument is drawn; this one is the deviation's
+   *  numerator. */
+  const leaderVenue = (w) => {
+    const have = Object.keys(w.quotes.by_venue);
+    if (state.leaderVenue && have.includes(state.leaderVenue)) return state.leaderVenue;
+    return have.find((v) => v === "binance_perps") ?? have.find((v) => v === "binance") ?? have.find((v) => !v.startsWith("hyperliquid"));
+  };
+  const leaderRows = (w) => {
+    const v = leaderVenue(w);
+    return v ? w.quotes.by_venue[v] : undefined;
+  };
+  const leaderLabel = (w) => {
+    const v = leaderVenue(w);
+    return v ? (VENUE[v]?.label ?? v) : "leader";
+  };
   const laggerRows = (w) => {
     const v = laggerVenue(w);
     return v ? w.quotes.by_venue[v] : undefined;
@@ -689,7 +710,7 @@
     // Whose mid (taker.exit.slope_exit.source): the lagger's, or the
     // leader's, which quotes first and so turns first.
     const slopeSrc = $("slopesrc").value === "leader" ? "leader" : "lagger";
-    const srcRows = slopeSrc === "leader" ? (w.quotes.by_venue.binance_perps ?? w.quotes.by_venue.binance) : hl;
+    const srcRows = slopeSrc === "leader" ? leaderRows(w) : hl;
     let slope = null;
     if (slopeFast > 0 && slopeSlow > slopeFast && srcRows && srcRows.length) {
       const emaOfRows = (rows, halftimeMs) => {
@@ -872,7 +893,7 @@
     // was judged only where the impulse had already decayed and read
     // refused where the bot had opened (ONDO 2026-09-20 10:31:10: 26 bps
     // recorded, all red on the page).
-    const leader = w.quotes.by_venue.binance_perps ?? w.quotes.by_venue.binance ?? [];
+    const leader = leaderRows(w) ?? [];
     const lagger = laggerRows(w) ?? [];
     // `half` is the lagger's half spread at each sample, bps: what the gain
     // (rho x deviation - half spread) is short of the deviation by.
@@ -971,7 +992,7 @@
       impulse = { t, v, hl: impulseHl, min: impulseMin, frac: impulseFrac, at };
       // The leader's EMA itself, on the price pane: the level the impulse
       // is measured from.
-      lines.push({ id: "binance:ema", name: `binance mid ema ${impulseHl} ms (impulse)`, color: "#8fb8ff", width: 1.5, dash: [8, 3], t, v: ema });
+      lines.push({ id: "leader:ema", name: `${leaderLabel(w)} mid ema ${impulseHl} ms (impulse)`, color: "#8fb8ff", width: 1.5, dash: [8, 3], t, v: ema });
     }
     const last = [...w.events].reverse().find((e) => e.decision?.threshold_bps != null);
     const threshold = last ? last.decision.threshold_bps : null;

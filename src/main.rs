@@ -319,18 +319,20 @@ async fn live_setup(State(app): State<Arc<App>>) -> ApiResult {
                 .unwrap_or_default()
             {
                 // The store's names or nothing: an unmapped instrument is
-                // left off the page rather than guessed at.
-                let (Some(binance), Some(hl)) = (
-                    symbols["binance_perps"][&canonical]
-                        .as_str()
-                        .map(str::to_owned),
+                // left off the page rather than guessed at. The leader is
+                // the strategy's own (Binance perps for most, OKX swaps
+                // for one), not Binance by assumption.
+                let leader = strategy["leader_venue"].as_str().unwrap_or("binance_perps");
+                let (Some(leader_symbol), Some(hl)) = (
+                    symbols[leader][&canonical].as_str().map(str::to_owned),
                     symbols[lagger][&canonical].as_str().map(str::to_owned),
                 ) else {
                     continue;
                 };
                 instruments.entry(canonical.clone()).or_insert(json!({
                     "canonical": canonical,
-                    "binance": binance,
+                    "leader": leader,
+                    "leader_symbol": leader_symbol,
                     "hl": hl,
                     "bot": name,
                     "strategy": strategy["name"],
@@ -584,6 +586,11 @@ async fn params(State(app): State<Arc<App>>, Query(q): Query<ParamsQuery>) -> Ap
         "bot": q.bot,
         "instrument": q.instrument,
         "strategy": strategy["name"],
+        // Whose quotes the strategy reads as the leader and the lagger:
+        // the page draws every venue scraped for the instrument and
+        // measures the deviation between these two.
+        "leader_venue": strategy["leader_venue"],
+        "lagger_venue": strategy["lagger_venue"],
         "version": version,
         "params": out,
     })))
