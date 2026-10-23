@@ -1,23 +1,27 @@
-// The live page: both venues' quotes and one address's orders and fills,
-// drawn as they arrive. Three sockets from the browser to the venues: the
-// Binance futures book ticker for the leader, Hyperliquid's bbo for the
-// lagger, and Hyperliquid's orderUpdates + userFills for the address. The
-// server only supplies the choices (addresses, symbols) from control.
+// The live page: the venues' quotes and one address's orders and fills,
+// drawn as they arrive. Four sockets from the browser to the venues: the
+// Binance futures book ticker and the OKX swap bbo for the leaders (each
+// drawn when the venue lists the coin; the edge reads the strategy's own
+// leader), Hyperliquid's bbo for the lagger, and Hyperliquid's
+// orderUpdates + userFills for the address. The server only supplies the
+// choices (addresses, symbols) from control.
 (() => {
   const $ = (id) => document.getElementById(id);
   const BINANCE_WS = "wss://fstream.binance.com/ws/";
+  const OKX_WS = "wss://ws.okx.com:8443/ws/v5/public";
   const HL_WS = "wss://api.hyperliquid.xyz/ws";
-  const LEADER = "#58a6ff", LAGGER = "#dde4ec", GREEN = "#3fb950", RED = "#f85149", AMBER = "#d29922", MUTED = "#8b98a9", LINE = "#273140";
+  const LEADER = "#58a6ff", OKX = "#2bb3a0", LAGGER = "#dde4ec", GREEN = "#3fb950", RED = "#f85149", AMBER = "#d29922", MUTED = "#8b98a9", LINE = "#273140";
 
   const state = {
     setup: null,
-    instrument: null, // {canonical, binance, hl}
+    instrument: null, // {canonical, leader, binance, okx, hl}
     address: "",
-    leader: [], // {t, bid, ask}
+    leader: [], // binance {t, bid, ask}
+    okx: [],
     lagger: [],
     orders: new Map(), // oid -> {oid, cloid, side, px, sz, origSz, status, t, coin}
     fills: [], // {t, side, px, sz, fee, pnl, oid, cloid, crossed}
-    sockets: { binance: null, hlbbo: null, hluser: null },
+    sockets: { binance: null, okx: null, hlbbo: null, hluser: null },
     timers: [],
     raf: 0,
     hover: null,
@@ -40,7 +44,7 @@
       .map((a) => `<option value="${esc(a.address)}">${esc(a.bot)} ${esc(a.label)} ${esc(a.address.slice(0, 8))}..${esc(a.address.slice(-4))}</option>`)
       .join("");
     const list = [...state.setup.instruments].sort((a, b) => a.canonical.localeCompare(b.canonical));
-    $("instrument").innerHTML = list.map((i) => `<option value="${esc(i.canonical)}">${esc(i.canonical)} (${esc(i.binance)} / ${esc(i.hl)})</option>`).join("");
+    $("instrument").innerHTML = list.map((i) => `<option value="${esc(i.canonical)}">${esc(i.canonical)} (${esc(i.leader_symbol)} / ${esc(i.hl)})</option>`).join("");
     // Open on the address with a strategy and an instrument of a subaccount
     // strategy when there is one: the thing most likely being watched.
     const sub = state.setup.accounts.find((a) => a.label && String(a.label).startsWith("sub") && (a.strategies ?? []).length);
@@ -67,14 +71,17 @@
     const canonical = $("instrument").value;
     state.instrument = state.setup.instruments.find((i) => i.canonical === canonical) ?? null;
     state.address = $("address").value;
-    state.leader = []; state.lagger = []; state.orders = new Map(); state.fills = [];
+    state.leader = []; state.okx = []; state.lagger = []; state.orders = new Map(); state.fills = [];
     $("log").querySelector("tbody").innerHTML = "";
     if (!state.instrument) { status("pick an instrument"); return; }
     const url = new URL(location.href);
     url.searchParams.set("address", state.address); url.searchParams.set("instrument", canonical);
     history.replaceState(null, "", url);
-    status(`${canonical}: ${state.instrument.binance} on binance, ${state.instrument.hl} on hyperliquid; ${state.address}`);
-    openBinance(); openHlBbo(); openHlUser();
+    const feeds = [state.instrument.binance ? `${state.instrument.binance} on binance` : null, state.instrument.okx ? `${state.instrument.okx} on okx` : null].filter(Boolean).join(", ");
+    status(`${canonical}: ${feeds}, ${state.instrument.hl} on hyperliquid; leader ${leaderName()}; ${state.address}`);
+    if (state.instrument.binance) openBinance(); else pill("s-binance", false);
+    if (state.instrument.okx) openOkx(); else pill("s-okx", false);
+    openHlBbo(); openHlUser();
     requestDraw();
   }
 
@@ -100,6 +107,26 @@
       const bid = Number(m.b), ask = Number(m.a);
       if (!(bid > 0 && ask > 0)) return;
       push(state.leader, { t: Number(m.E ?? m.T ?? Date.now()), bid, ask });
+    });
+  }
+
+  /** The strategy's leader: okx when its leader venue is the OKX swap, else binance. */
+  const leaderName = () => (state.instrument?.leader === "okx_swap" ? "okx" : "binance");
+  const leaderRows = () => (leaderName() === "okx" ? state.okx : state.leader);
+
+  function openOkx() {
+    const instId = state.instrument.okx;
+    socket("okx", OKX_WS, (ws) => {
+      ws.send(JSON.stringify({ op: "subscribe", args: [{ channel: "bbo-tbt", instId }] }));
+      // OKX closes a socket quiet for 30 s; the ping is the bare word.
+      state.timers.push(setInterval(() => { if (ws.readyState === 1) ws.send("ping"); }, 20000));
+    }, (m) => {
+      if (m.arg?.channel !== "bbo-tbt" || m.arg?.instId !== instId) return;
+      for (const d of m.data ?? []) {
+        const bid = Number(d.bids?.[0]?.[0]), ask = Number(d.asks?.[0]?.[0]);
+        if (!(bid > 0 && ask > 0)) continue;
+        push(state.okx, { t: Number(d.ts ?? Date.now()), bid, ask });
+      }
     });
   }
 
@@ -195,10 +222,10 @@
     const now = Date.now(), x0 = now - spanMs(), x1 = now;
     const mode = $("mode").value;
     const vis = (arr) => arr.filter((q) => q.t >= x0 - 1000);
-    const L = vis(state.leader), G = vis(state.lagger);
+    const L = vis(state.leader), K = vis(state.okx), G = vis(state.lagger);
     let lo = Infinity, hi = -Infinity;
     const take = (q) => { if (mode === "mid") { const m = (q.bid + q.ask) / 2; lo = Math.min(lo, m); hi = Math.max(hi, m); } else { lo = Math.min(lo, q.bid); hi = Math.max(hi, q.ask); } };
-    L.forEach(take); G.forEach(take);
+    L.forEach(take); K.forEach(take); G.forEach(take);
     for (const o of state.orders.values()) if (o.t >= x0 && o.px > 0) { lo = Math.min(lo, o.px); hi = Math.max(hi, o.px); }
     for (const f of state.fills) if (f.t >= x0) { lo = Math.min(lo, f.px); hi = Math.max(hi, f.px); }
     if (!(lo < hi)) { ctx.fillStyle = MUTED; ctx.font = "12px system-ui"; ctx.fillText("waiting for quotes", P.left + 10, P.top + 20); return; }
@@ -233,9 +260,11 @@
     };
     if (mode === "mid") {
       line(L, (q) => (q.bid + q.ask) / 2, LEADER, 1.4);
+      line(K, (q) => (q.bid + q.ask) / 2, OKX, 1.4);
       line(G, (q) => (q.bid + q.ask) / 2, LAGGER, 1.8);
     } else {
       line(L, (q) => q.bid, LEADER, 1, [3, 3]); line(L, (q) => q.ask, LEADER, 1, [3, 3]);
+      line(K, (q) => q.bid, OKX, 1, [3, 3]); line(K, (q) => q.ask, OKX, 1, [3, 3]);
       line(G, (q) => q.bid, LAGGER, 1.6); line(G, (q) => q.ask, LAGGER, 1.6);
     }
 
@@ -264,13 +293,15 @@
     // latest values
     ctx.font = "11px ui-monospace, monospace"; ctx.textAlign = "left";
     const last = (arr) => arr.length ? arr[arr.length - 1] : null;
-    const l = last(L), g = last(G);
+    const l = last(L), k = last(K), g = last(G);
     let yy = P.top + 4;
     if (l) { ctx.fillStyle = LEADER; ctx.fillText(`binance ${l.bid} / ${l.ask}  ${fmtT(l.t)}`, P.left + 6, yy); yy += 14; }
+    if (k) { ctx.fillStyle = OKX; ctx.fillText(`okx ${k.bid} / ${k.ask}  ${fmtT(k.t)}`, P.left + 6, yy); yy += 14; }
     if (g) { ctx.fillStyle = LAGGER; ctx.fillText(`hyperliquid ${g.bid} / ${g.ask}  ${fmtT(g.t)}`, P.left + 6, yy); yy += 14; }
-    if (l && g) {
-      const edge = (((l.bid + l.ask) / 2 - (g.bid + g.ask) / 2) / ((g.bid + g.ask) / 2)) * 10000;
-      ctx.fillStyle = edge >= 0 ? GREEN : RED; ctx.fillText(`edge ${edge >= 0 ? "+" : ""}${edge.toFixed(1)} bps (binance over hl)`, P.left + 6, yy);
+    const lead = last(vis(leaderRows()));
+    if (lead && g) {
+      const edge = (((lead.bid + lead.ask) / 2 - (g.bid + g.ask) / 2) / ((g.bid + g.ask) / 2)) * 10000;
+      ctx.fillStyle = edge >= 0 ? GREEN : RED; ctx.fillText(`edge ${edge >= 0 ? "+" : ""}${edge.toFixed(1)} bps (${leaderName()} over hl)`, P.left + 6, yy);
     }
   }
   function tri(x, y, up, solid, color) {

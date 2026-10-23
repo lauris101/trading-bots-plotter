@@ -329,10 +329,15 @@ async fn live_setup(State(app): State<Arc<App>>) -> ApiResult {
                 ) else {
                     continue;
                 };
+                // Every leader venue's symbol the store has, so the live
+                // page can open each venue's feed; null where the venue
+                // does not list the coin.
                 instruments.entry(canonical.clone()).or_insert(json!({
                     "canonical": canonical,
                     "leader": leader,
                     "leader_symbol": leader_symbol,
+                    "binance": symbols["binance_perps"][&canonical].as_str(),
+                    "okx": symbols["okx_swap"][&canonical].as_str(),
                     "hl": hl,
                     "bot": name,
                     "strategy": strategy["name"],

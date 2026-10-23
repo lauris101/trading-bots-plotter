@@ -45,6 +45,7 @@
   <label class="f">show <select id="mode"><option value="mid" selected>mids</option><option value="touch">bid / ask</option></select></label>
   <span class="meta" style="align-self:center">
     <span id="s-binance" class="pill">binance</span>
+    <span id="s-okx" class="pill">okx</span>
     <span id="s-hlbbo" class="pill">hl bbo</span>
     <span id="s-hluser" class="pill">hl orders+fills</span>
   </span>
@@ -57,8 +58,10 @@
   </div>
 </div>
 <div class="legend">
-  <span><i class="sw" style="background:#58a6ff"></i>binance (leader)</span>
+  <span><i class="sw" style="background:#58a6ff"></i>binance</span>
+  <span><i class="sw" style="background:#2bb3a0"></i>okx</span>
   <span><i class="sw" style="background:#dde4ec"></i>hyperliquid (lagger)</span>
+  <span class="meta">the edge reads the strategy's own leader over hyperliquid</span>
   <span><i class="tri"></i>order resting (at its limit; hollow while open, crossed when cancelled)</span>
   <span><i class="dot" style="background:var(--green)"></i>buy fill</span>
   <span><i class="dot" style="background:var(--red)"></i>sell fill</span>
