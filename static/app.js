@@ -480,7 +480,8 @@
       const cleared = gain != null && thr != null ? Math.abs(gain) - thr : null;
       const rows = [];
       const row = (k, v, note = "") => rows.push(`<tr><td>${k}</td><td class="n">${v}</td><td class="note">${note}</td></tr>`);
-      if (edge != null) row("gap", `${f(Math.abs(edge))} bps`, `${state.win ? leaderLabel(state.win) : "leader"} ${buy ? "above" : "below"} hl: ${esc(d.leader_mid)} vs ${esc(d.lagger_bid)}/${esc(d.lagger_ask)}`);
+      const leaderName = (state.leaderVenue && VENUE[state.leaderVenue]?.label) || "binance";
+      if (edge != null) row("gap", `${f(Math.abs(edge))} bps`, `${leaderName} ${buy ? "above" : "below"} hl: ${esc(d.leader_mid)} vs ${esc(d.lagger_bid)}/${esc(d.lagger_ask)}`);
       if (basis != null) row("basis", `${f(Math.abs(basis))} bps`, "standing gap, not traded");
       // Two readings of the move, each with its own job: the raw one (the
       // tick itself) prices the bribe, the reach and the landing; the
