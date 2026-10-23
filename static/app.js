@@ -172,6 +172,8 @@
     if (e.kind === "acked") return e.status ?? "acked";
     if (e.kind === "cancelled") return `cancel ${e.status ?? "ok"}`;
     if (e.kind === "cancel_sent") return "cancel sent";
+    if (e.kind === "kill_sent") return "kill sent";
+    if (e.kind === "killed") return `kill ${e.status ?? ""}`.trim();
     if (e.kind === "amend") return e.amend_ok === false ? "amend refused" : e.amend_ok ? "amend landed" : "amend";
     return e.kind;
   };
@@ -342,6 +344,13 @@
     "amend:refused": ["arrow", 9, false, "amend REFUSED (it stayed put)"],
     "fill": ["circle", 5, true, "fill"],
     "cancel_sent": ["x", 6, false, "cancel sent"],
+    // The in-flight kill: a noop on the open's nonce, racing it. Won, the
+    // open comes back as a duplicate nonce; unsent, it never left.
+    "kill_sent": ["circle-x", 7, false, "kill sent (noop on the open's nonce)"],
+    "killed:won": ["circle-x", 9, true, "kill WON: the open was refused on its nonce"],
+    "killed:unsent": ["circle-x", 9, true, "kill WON: the open was dropped before the write"],
+    "killed:lost": ["circle-x", 7, false, "kill lost: the open was first"],
+    "killed:late": ["circle-x", 7, false, "kill late: the open had answered"],
     "cancelled:ok": ["x", 6, true, "cancelled"],
     "cancelled:failed": ["circle-x", 9, true, "cancel FAILED"],
     "left_resting": ["hexagon", 8, false, "left resting"],
@@ -372,6 +381,7 @@
     // round trip made visible.
     if (e.kind === "acked") return KIND[`acked:${e.status}`] ? `acked:${e.status}` : "acked:unknown";
     if (e.kind === "cancelled") return `cancelled:${e.status ?? "ok"}`;
+    if (e.kind === "killed") return KIND[`killed:${e.status}`] ? `killed:${e.status}` : "other";
     return KIND[e.kind] ? e.kind : "other";
   };
   const priceOf = (e) => {
