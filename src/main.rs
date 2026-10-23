@@ -345,6 +345,32 @@ async fn live_setup(State(app): State<Arc<App>>) -> ApiResult {
             }
         }
     }
+    // The leader feeds' symbols from the instrument model, every venue's,
+    // not only the strategy's own: the live page opens each leader venue
+    // that lists the coin (Binance perps, OKX swaps) and draws both.
+    let rows = sqlx::query(
+        "select upper(i.symbol) as canonical, g.code, s.symbol
+         from instrument_symbols s
+         join instruments i on i.id = s.instrument_id
+         join symbologies g on g.id = s.symbology_id
+         where g.code in ('binance_perps', 'okx_swap')
+           and (s.valid_to is null or s.valid_to > now())",
+    )
+    .fetch_all(&app.pool)
+    .await
+    .map_err(internal)?;
+    for r in &rows {
+        let canonical: String = r.get("canonical");
+        let code: String = r.get("code");
+        let symbol: String = r.get("symbol");
+        let Some(inst) = instruments.get_mut(&canonical) else {
+            continue;
+        };
+        let field = if code == "okx_swap" { "okx" } else { "binance" };
+        if inst[field].is_null() {
+            inst[field] = Value::String(symbol);
+        }
+    }
     Ok(Json(json!({
         "accounts": accounts,
         "instruments": instruments.values().collect::<Vec<_>>(),
