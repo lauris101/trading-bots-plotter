@@ -470,10 +470,19 @@
       const row = (k, v, note = "") => rows.push(`<tr><td>${k}</td><td class="n">${v}</td><td class="note">${note}</td></tr>`);
       if (edge != null) row("gap", `${f(Math.abs(edge))} bps`, `binance ${buy ? "above" : "below"} hl: ${esc(d.leader_mid)} vs ${esc(d.lagger_bid)}/${esc(d.lagger_ask)}`);
       if (basis != null) row("basis", `${f(Math.abs(basis))} bps`, "standing gap, not traded");
-      if (rawDev != null) row("move", `${f(Math.abs(rawDev))} bps`, dev != null && Math.abs(Math.abs(dev) - Math.abs(rawDev)) > 0.05 ? `gap - basis; ${f(Math.abs(dev))} smoothed` : "gap - basis");
-      if (rho != null) row("follow", `${f(rho * Math.abs(dev ?? rawDev ?? 0))} bps`, `move x rho ${f(rho, 2)}${num(d.rho_measured) != null ? ` (measured ${f(d.rho_measured, 2)})` : ""}`);
-      if (gain != null) row("gain", `${f(Math.abs(gain))} bps`, `${halfSpread != null ? `follow - half spread ${f(halfSpread)}` : ""}; the trigger`);
-      if (rawGain != null && gain != null && Math.abs(Math.abs(rawGain) - Math.abs(gain)) > 0.05) row("raw gain", `${f(Math.abs(rawGain))} bps`, `raw move ${f(Math.abs(rawDev))} x rho ${f(rho, 2)}${halfSpread != null ? ` - half spread ${f(halfSpread)}` : ""}; what the bribe, reach and landing read`);
+      // Two readings of the move, each with its own job: the raw one (the
+      // tick itself) prices the bribe, the reach and the landing; the
+      // smoothed one (the ema) is what the trigger reads. When they agree
+      // one set of rows does; when they differ every step is shown twice,
+      // so the trigger's arithmetic and the pricing's are both on the panel.
+      const smoothedDiffers = dev != null && rawDev != null && Math.abs(Math.abs(dev) - Math.abs(rawDev)) > 0.05;
+      const rhoNote = num(d.rho_measured) != null ? ` (measured ${f(d.rho_measured, 2)})` : "";
+      if (rawDev != null) row("move", `${f(Math.abs(rawDev))} bps`, `gap - basis, the raw tick; prices the bribe, reach and landing`);
+      if (smoothedDiffers) row("smoothed", `${f(Math.abs(dev))} bps`, "the move through the ema; what the trigger reads");
+      if (rho != null && rawDev != null) row(smoothedDiffers ? "raw follow" : "follow", `${f(rho * Math.abs(rawDev))} bps`, `move ${f(Math.abs(rawDev))} x rho ${f(rho, 2)}${rhoNote}`);
+      if (rho != null && smoothedDiffers) row("follow", `${f(rho * Math.abs(dev))} bps`, `smoothed ${f(Math.abs(dev))} x rho ${f(rho, 2)}${rhoNote}`);
+      if (rawGain != null && smoothedDiffers) row("raw gain", `${f(Math.abs(rawGain))} bps`, `raw follow${halfSpread != null ? ` - half spread ${f(halfSpread)}` : ""}; what the curve is read at`);
+      if (gain != null) row("gain", `${f(Math.abs(gain))} bps`, `follow${halfSpread != null ? ` - half spread ${f(halfSpread)}` : ""}; the trigger, against the bar`);
       if (thr != null) row("bar", `${f(thr)} bps`, [fees != null ? `fees ${f(2 * fees)}` : null, margin != null ? `margin ${f(margin)}` : null, base != null ? `base bribe ${f(base)}` : null].filter(Boolean).join(" + "));
       if (cleared != null) row("cleared", cleared >= 0 ? `<span style="color:#3fb950">+${f(cleared)} bps</span>` : `<span style="color:#f85149">${f(cleared)} bps</span>`, "gain - bar");
       if (sent != null) row("bribe", `${f(sent)} bps`, `${rawGain != null ? `the curve at raw gain ${f(Math.abs(rawGain))}` : ""}${base != null && sent > base + 0.05 ? `; ${f(sent - base)} over the base the bar prices` : ""}`);
